@@ -142,6 +142,198 @@ async function fetchInventory({ companyId } = {}) {
   return summarizeInventory(records, 'db');
 }
 
+/**
+ * Vendor-wise payables — the mirror of fetchOutstanding, but money the
+ * company owes rather than is owed. Sourced from outstanding_payables
+ * (party totals) plus an aging breakdown from bills_payable (bill-level,
+ * with overdue_days already computed by the sync engine).
+ */
+async function fetchPayables({ companyId } = {}) {
+  const params = [];
+  let companyFilter = '';
+  if (companyId) {
+    const cid = await resolveCompanyId(companyId);
+    params.push(cid);
+    companyFilter = ` AND company_id = $${params.length}`;
+  }
+
+  const { rows: parties } = await query(`
+    SELECT party_name AS "partyName", SUM(amount_payable) AS "amountPayable"
+    FROM outstanding_payables
+    WHERE 1=1 ${companyFilter}
+    GROUP BY party_name
+    ORDER BY "amountPayable" DESC
+  `, params);
+
+  const { rows: aging } = await query(`
+    SELECT
+      CASE
+        WHEN overdue_days <= 0  THEN 'Not Due'
+        WHEN overdue_days <= 30 THEN '1-30 days'
+        WHEN overdue_days <= 60 THEN '31-60 days'
+        WHEN overdue_days <= 90 THEN '61-90 days'
+        ELSE '90+ days'
+      END AS bucket,
+      COUNT(*) AS "billCount",
+      SUM(amount) AS "amount"
+    FROM bills_payable
+    WHERE 1=1 ${companyFilter}
+    GROUP BY 1
+  `, params);
+
+  const bucketOrder = ['Not Due', '1-30 days', '31-60 days', '61-90 days', '90+ days'];
+
+  return {
+    source: 'db',
+    totalPayable: parties.reduce((s, p) => s + p.amountPayable, 0),
+    totalVendors: parties.length,
+    payables: parties,
+    aging: aging.sort((a, b) => bucketOrder.indexOf(a.bucket) - bucketOrder.indexOf(b.bucket)),
+  };
+}
+
+/**
+ * Cash Flow (Receipts & Payments), one summary per company.
+ *
+ * trial_balance_groups/pl_items/cash_flow_items are snapshot tables — the
+ * sync engine inserts a fresh row set every run rather than replacing the
+ * old one (period_to advances to "today" each time), so multiple sync runs
+ * leave multiple overlapping snapshots per company. Summing across all of
+ * them double/triple-counts everything — verified live: it inflated one
+ * company's cash inflow from a real ~₹14 Cr to a nonsense ~₹55 Cr. Always
+ * scope to MAX(period_to) per company to use only the latest snapshot.
+ */
+async function fetchCashFlow({ companyId } = {}) {
+  const params = [];
+  let companyFilter = '';
+  if (companyId) {
+    const cid = await resolveCompanyId(companyId);
+    params.push(cid);
+    companyFilter = ` AND cfi.company_id = $${params.length}`;
+  }
+
+  const { rows } = await query(`
+    SELECT cfi.company_id AS "companyId", c.name AS "companyName",
+           cfi.item_name AS "itemName", cfi.main_amount AS "amount",
+           cfi.period_from AS "periodFrom", cfi.period_to AS "periodTo"
+    FROM cash_flow_items cfi
+    JOIN (SELECT company_id, MAX(period_to) AS max_to FROM cash_flow_items GROUP BY company_id) latest
+      ON latest.company_id = cfi.company_id AND latest.max_to = cfi.period_to
+    JOIN companies c ON c.id = cfi.company_id
+    WHERE 1=1 ${companyFilter}
+    ORDER BY cfi.company_id, cfi.main_amount DESC
+  `, params);
+
+  const byCompany = {};
+  for (const r of rows) {
+    if (!byCompany[r.companyId]) {
+      byCompany[r.companyId] = {
+        companyId: r.companyId,
+        companyName: r.companyName,
+        periodFrom: r.periodFrom,
+        periodTo: r.periodTo,
+        inflow: 0,
+        outflow: 0,
+        lineItems: [],
+      };
+    }
+    const c = byCompany[r.companyId];
+    if (r.amount > 0) c.inflow += r.amount; else c.outflow += r.amount;
+    c.lineItems.push({ itemName: r.itemName, amount: r.amount });
+  }
+
+  const companies = Object.values(byCompany).map((c) => ({ ...c, netCashFlow: c.inflow + c.outflow }));
+
+  return { source: 'db', companies };
+}
+
+/**
+ * P&L (pl_items) and Balance Sheet (trial_balance_groups) per company —
+ * the AUTHORITATIVE totals per tally_sync_architecture.md, independent of
+ * whether individual sales vouchers were fully synced. Same latest-snapshot
+ * caveat as fetchCashFlow applies to trial_balance_groups.
+ */
+async function fetchFinancials({ companyId } = {}) {
+  const params = [];
+  let companyFilter = '';
+  if (companyId) {
+    const cid = await resolveCompanyId(companyId);
+    params.push(cid);
+    companyFilter = ` AND pl.company_id = $${params.length}`;
+  }
+
+  const { rows: plRows } = await query(`
+    SELECT pl.company_id AS "companyId", c.name AS "companyName",
+           pl.group_name AS "groupName", pl.main_amount AS "amount",
+           pl.period_from AS "periodFrom", pl.period_to AS "periodTo"
+    FROM pl_items pl
+    JOIN (SELECT company_id, MAX(period_to) AS max_to FROM pl_items GROUP BY company_id) latest
+      ON latest.company_id = pl.company_id AND latest.max_to = pl.period_to
+    JOIN companies c ON c.id = pl.company_id
+    WHERE 1=1 ${companyFilter}
+    ORDER BY pl.company_id, pl.main_amount DESC
+  `, params);
+
+  const bsParams = [];
+  let bsCompanyFilter = '';
+  if (companyId) {
+    bsParams.push(await resolveCompanyId(companyId));
+    bsCompanyFilter = ` AND tbg.company_id = $${bsParams.length}`;
+  }
+
+  const { rows: bsRows } = await query(`
+    SELECT tbg.company_id AS "companyId", tbg.group_name AS "groupName", tbg.net_balance AS "netBalance"
+    FROM trial_balance_groups tbg
+    JOIN (SELECT company_id, MAX(period_to) AS max_to FROM trial_balance_groups GROUP BY company_id) latest
+      ON latest.company_id = tbg.company_id AND latest.max_to = tbg.period_to
+    WHERE tbg.group_name IN ('Current Assets', 'Current Liabilities', 'Fixed Assets', 'Capital Account', 'Loans (Liability)')
+      ${bsCompanyFilter}
+  `, bsParams);
+
+  const byCompany = {};
+  for (const r of plRows) {
+    if (!byCompany[r.companyId]) {
+      byCompany[r.companyId] = {
+        companyId: r.companyId,
+        companyName: r.companyName,
+        periodFrom: r.periodFrom,
+        periodTo: r.periodTo,
+        pl: { revenue: 0, costOfSales: 0, netProfit: 0, lineItems: [] },
+        balanceSheet: { currentAssets: 0, currentLiabilities: 0, fixedAssets: 0, capitalAccount: 0, loans: 0 },
+      };
+    }
+    const entry = byCompany[r.companyId];
+    entry.pl.lineItems.push({ groupName: r.groupName, amount: r.amount });
+    entry.pl.netProfit += r.amount;
+    if (r.groupName === 'Sales Accounts')  entry.pl.revenue     = r.amount;
+    if (r.groupName === 'Cost of Sales :') entry.pl.costOfSales = r.amount;
+  }
+  for (const entry of Object.values(byCompany)) {
+    entry.pl.grossProfit = entry.pl.revenue + entry.pl.costOfSales; // costOfSales is already negative
+  }
+
+  const bsFieldByGroup = {
+    'Current Assets':      'currentAssets',
+    'Current Liabilities': 'currentLiabilities',
+    'Fixed Assets':        'fixedAssets',
+    'Capital Account':     'capitalAccount',
+    'Loans (Liability)':   'loans',
+  };
+  // Assets carry a debit balance, so net_balance stores them negative under
+  // Tally's Cr-positive/Dr-negative convention (see schema.sql). A balance
+  // sheet always presents assets as positive figures, so flip sign here —
+  // liabilities/equity are already Cr-positive and need no adjustment.
+  const ASSET_FIELDS = new Set(['currentAssets', 'fixedAssets']);
+  for (const r of bsRows) {
+    const entry = byCompany[r.companyId];
+    if (!entry) continue;
+    const field = bsFieldByGroup[r.groupName];
+    entry.balanceSheet[field] = ASSET_FIELDS.has(field) ? Math.abs(r.netBalance) : r.netBalance;
+  }
+
+  return { source: 'db', companies: Object.values(byCompany) };
+}
+
 module.exports = {
   fetchSalesRecords,
   fetchLiveSalesData,
@@ -149,4 +341,7 @@ module.exports = {
   fetchDealers,
   fetchOutstanding,
   fetchInventory,
+  fetchPayables,
+  fetchCashFlow,
+  fetchFinancials,
 };

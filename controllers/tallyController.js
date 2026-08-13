@@ -240,6 +240,49 @@ async function getInventory(req, res) {
 }
 
 /**
+ * Payables, cash flow and financials only exist in Postgres — there's no
+ * local demo or live-Tally equivalent to fall back to (data.js never
+ * modeled them). Returns a clear "unavailable" response instead of a fake
+ * empty dataset when dataSource isn't 'db' or Postgres can't be reached.
+ */
+async function dbOnly(res, label, fn) {
+  if (config.dataSource !== 'db') {
+    return res.status(503).json({ ok: false, message: `${label} requires DATA_SOURCE=db.`, data: null });
+  }
+  try {
+    const data = await fn();
+    return res.json({ ok: true, data });
+  } catch (err) {
+    logger.error(`${label} controller error.`, { message: err.message });
+    return res.status(503).json({ ok: false, message: err.message, data: null });
+  }
+}
+
+/**
+ * GET /api/tally/payables
+ * Vendor-wise outstanding payables + aging buckets.
+ */
+async function getPayables(req, res) {
+  return dbOnly(res, 'getPayables', () => dbDataService.fetchPayables());
+}
+
+/**
+ * GET /api/tally/cashflow
+ * Receipts & Payments summary per company.
+ */
+async function getCashFlow(req, res) {
+  return dbOnly(res, 'getCashFlow', () => dbDataService.fetchCashFlow());
+}
+
+/**
+ * GET /api/tally/financials
+ * P&L + Balance Sheet per company (Tally's authoritative group totals).
+ */
+async function getFinancials(req, res) {
+  return dbOnly(res, 'getFinancials', () => dbDataService.fetchFinancials());
+}
+
+/**
  * GET /api/tally/health
  * Pings the Tally XML port and reports reachability.
  */
@@ -297,4 +340,8 @@ async function syncFromTally(req, res) {
   }
 }
 
-module.exports = { importAll, importOne, getSales, getDealers, getOutstanding, getInventory, healthCheck, getAllData, syncFromTally };
+module.exports = {
+  importAll, importOne, getSales, getDealers, getOutstanding, getInventory,
+  getPayables, getCashFlow, getFinancials,
+  healthCheck, getAllData, syncFromTally,
+};

@@ -16,6 +16,9 @@ const {
   getDealers,
   getOutstanding,
   getInventory,
+  getPayables,
+  getCashFlow,
+  getFinancials,
   healthCheck,
   getAllData,
   syncFromTally,
@@ -52,6 +55,18 @@ router.get('/outstanding', getOutstanding);
 
 // GET /api/tally/inventory
 router.get('/inventory', getInventory);
+
+// GET /api/tally/payables
+// Vendor-wise outstanding payables + aging buckets (db-only — no local/tally equivalent).
+router.get('/payables', getPayables);
+
+// GET /api/tally/cashflow
+// Receipts & Payments summary per company (db-only).
+router.get('/cashflow', getCashFlow);
+
+// GET /api/tally/financials
+// P&L + Balance Sheet per company, from Tally's authoritative group totals (db-only).
+router.get('/financials', getFinancials);
 
 // GET /api/tally/data
 // Returns full salesData array — consumed by the React dashboard (RoleContext).
