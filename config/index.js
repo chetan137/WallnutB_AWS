@@ -97,6 +97,14 @@ const config = {
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean),
+
+  /**
+   * Shared secret required on the X-API-Key header for every /api/tally/*
+   * request. Empty = no check (local dev default). Set this in production
+   * so the API can't be scraped by anyone who has the URL — the frontend
+   * sends it via VITE_API_KEY (see frontend/src/context/RoleContext.jsx).
+   */
+  apiKey: process.env.API_KEY || '',
 };
 
 module.exports = config;

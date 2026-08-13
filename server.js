@@ -40,7 +40,7 @@ app.use(cors({
     callback(new Error(`CORS: origin ${origin} not allowed`));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
   credentials: true,
 }));
 
@@ -93,8 +93,18 @@ app.get('/api/health', async (_req, res) => {
   });
 });
 
+// ─── API key check ────────────────────────────────────────────────────────────
+// Protects /api/tally/* from anyone who just has the URL (no login screen
+// blocks a direct hit otherwise). Empty API_KEY (local dev default) = no
+// check. The frontend sends VITE_API_KEY as X-API-Key — see RoleContext.jsx.
+function requireApiKey(req, res, next) {
+  if (!config.apiKey) return next();
+  if (req.header('x-api-key') === config.apiKey) return next();
+  return res.status(401).json({ ok: false, message: 'Unauthorized', data: null });
+}
+
 // Tally API routes
-app.use('/api/tally', tallyRoutes);
+app.use('/api/tally', requireApiKey, tallyRoutes);
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────────
 app.use((req, res) => {
