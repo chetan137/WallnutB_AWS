@@ -52,6 +52,15 @@ const cache = createTtlCache();
  *    synced yet — so restricting to "the active company" would show nothing
  *    despite real data existing. Aggregating across every synced company
  *    also matches the cross-FY queries tally_sync_architecture.md describes.
+ *  • state falls back to the party's ledger master (`ledgers.state`, keyed
+ *    by GST registration — ~90% populated) when the voucher's own narration
+ *    has none. Verified against real data: this Tally setup's narrations are
+ *    free text written by accountants ("Being Material send to..."), not the
+ *    structured "Item: X | Area: Y | State: Z" format the sync parser looks
+ *    for, so vie.state/area_city/sales_officer are empty for every real
+ *    voucher — there's no district/officer source anywhere in the synced
+ *    schema, only state (via the ledger). District/officer-scoped dashboard
+ *    views will stay empty for real data until that's addressed upstream.
  */
 async function fetchSalesRecords({ from, to, companyId } = {}) {
   const params = [];
@@ -68,27 +77,29 @@ async function fetchSalesRecords({ from, to, companyId } = {}) {
 
   const { rows } = await query(`
     SELECT
-      v.vch_no                             AS "vchNo",
-      v.date                                AS "date",
-      v.vch_type                            AS "vchType",
-      v.party_name                          AS "partyName",
-      vie.item_name                         AS "itemName",
-      COALESCE(vie.quantity, 0)             AS "quantity",
-      vie.unit                              AS "units",
-      COALESCE(vie.rate, 0)                 AS "rate",
-      COALESCE(vie.amount, v.total_amount)  AS "amount",
-      COALESCE(vie.sales_officer, '')       AS "salesMan",
-      COALESCE(vie.area_city, '')           AS "areaCity",
-      COALESCE(vie.state, '')               AS "state",
-      COALESCE(si.parent_group, '')         AS "stockGroup",
-      COALESCE(si.parent_group, '')         AS "stockCategory",
-      COALESCE(br.amount, 0)                AS "finalOutstanding"
+      v.vch_no                                        AS "vchNo",
+      v.date                                           AS "date",
+      v.vch_type                                       AS "vchType",
+      v.party_name                                     AS "partyName",
+      vie.item_name                                    AS "itemName",
+      COALESCE(vie.quantity, 0)                        AS "quantity",
+      vie.unit                                         AS "units",
+      COALESCE(vie.rate, 0)                            AS "rate",
+      COALESCE(vie.amount, v.total_amount)             AS "amount",
+      COALESCE(vie.sales_officer, '')                  AS "salesMan",
+      COALESCE(vie.area_city, '')                      AS "areaCity",
+      COALESCE(NULLIF(vie.state, ''), l.state, '')     AS "state",
+      COALESCE(si.parent_group, '')                    AS "stockGroup",
+      COALESCE(si.parent_group, '')                    AS "stockCategory",
+      COALESCE(br.amount, 0)                           AS "finalOutstanding"
     FROM vouchers v
     LEFT JOIN voucher_inventory_entries vie ON vie.voucher_id = v.id
     LEFT JOIN stock_items si
       ON si.company_id = v.company_id AND si.name = vie.item_name
     LEFT JOIN bills_receivable br
       ON br.company_id = v.company_id AND br.party_name = v.party_name AND br.bill_ref = v.vch_no
+    LEFT JOIN ledgers l
+      ON l.company_id = v.company_id AND l.name = v.party_name
     WHERE v.is_cancelled = false
       AND (LOWER(v.vch_type) LIKE 'sales%' OR LOWER(v.vch_type) LIKE 'credit note%')
       ${companyFilter}
