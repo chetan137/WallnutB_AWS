@@ -30,7 +30,7 @@ const cache = createTtlCache();
  * Flat sales rows — one per (voucher, inventory line) — matching the
  * frontend's salesData record shape exactly.
  *
- * Notes on the joins:
+ * Notes on the joins/filters:
  *  • voucher_inventory_entries is LEFT JOINed (not INNER) so a voucher with
  *    no synced line item (e.g. a service invoice, or a sync-timing gap)
  *    still contributes one row using the voucher's own total_amount —
@@ -42,11 +42,26 @@ const cache = createTtlCache();
  *    number, but it can be manually overridden — verify this join once real
  *    data is connected; if bill references diverge from voucher numbers,
  *    outstanding figures here will read low.
+ *  • vch_type is matched with LIKE 'sales%' / 'credit note%', not an exact
+ *    match — this Tally setup names vouchers per branch, e.g.
+ *    "Sales-Bhiwandi" / "Sales - Kolhapur" / "Credit Note-Kolhapur", never
+ *    the bare "Sales" the schema doc used as an example.
+ *  • No company_id filter by default (only applied when the caller passes
+ *    one explicitly). Real vouchers currently live entirely under the
+ *    *historical* company (last FY) — the active FY company has no sales
+ *    synced yet — so restricting to "the active company" would show nothing
+ *    despite real data existing. Aggregating across every synced company
+ *    also matches the cross-FY queries tally_sync_architecture.md describes.
  */
 async function fetchSalesRecords({ from, to, companyId } = {}) {
-  const cid = await resolveCompanyId(companyId);
+  const params = [];
+  let companyFilter = '';
+  if (companyId) {
+    const cid = await resolveCompanyId(companyId);
+    params.push(cid);
+    companyFilter = ` AND v.company_id = $${params.length}`;
+  }
 
-  const params = [cid];
   let dateFilter = '';
   if (from) { params.push(from); dateFilter += ` AND v.date >= $${params.length}`; }
   if (to)   { params.push(to);   dateFilter += ` AND v.date <= $${params.length}`; }
@@ -74,9 +89,9 @@ async function fetchSalesRecords({ from, to, companyId } = {}) {
       ON si.company_id = v.company_id AND si.name = vie.item_name
     LEFT JOIN bills_receivable br
       ON br.company_id = v.company_id AND br.party_name = v.party_name AND br.bill_ref = v.vch_no
-    WHERE v.company_id = $1
-      AND v.is_cancelled = false
-      AND LOWER(v.vch_type) IN ('sales', 'credit note')
+    WHERE v.is_cancelled = false
+      AND (LOWER(v.vch_type) LIKE 'sales%' OR LOWER(v.vch_type) LIKE 'credit note%')
+      ${companyFilter}
       ${dateFilter}
     ORDER BY v.date DESC
   `, params);
