@@ -146,10 +146,18 @@ All endpoints return:
 - Full import result logged with `imported / duplicates / failed` counts
 
 ### Fallback Strategy
-When Tally is **unreachable** (not running, wrong port, etc.):
-- All fetch endpoints gracefully fall back to **local data.js**
-- Response includes `"source": "local"` so the React dashboard can show a badge
-- No errors thrown — dashboard always has data
+Controlled by `DATA_SOURCE` in `.env` (`db` | `tally` | `local`):
+- `db` (production) — reads Postgres on the Antraweb VM (see `services/dbDataService.js`).
+  If Postgres is unreachable, falls back to local demo data.
+- `tally` (local dev) — hits TallyPrime's XML API directly. Falls back to local on error.
+- `local` — always serves the bundled `data.js` demo dataset.
+
+Every fetch endpoint gracefully falls back to **local data.js** on any failure —
+response includes `"source"` (`db` | `tally` | `local`) so the React dashboard
+can show a badge. No errors thrown — dashboard always has data.
+
+See [DEPLOY.md](./DEPLOY.md) for the AWS EC2 CI/CD pipeline (GitHub Actions →
+SSH → PM2), and `../tally_sync_architecture.md` for how Postgres gets populated.
 
 ### Tally XML Voucher Format
 ```xml

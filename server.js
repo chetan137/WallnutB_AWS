@@ -25,6 +25,7 @@ const cors    = require('cors');
 const config      = require('./config');
 const logger      = require('./utils/logger');
 const tallyRoutes = require('./routes/tally');
+const dbPool      = require('./db/pool');
 
 const app = express();
 
@@ -63,8 +64,10 @@ app.get('/', (_req, res) => {
     service: 'Wallnut Tally API',
     version: '1.0.0',
     environment: config.env,
+    dataSource: config.dataSource,
     tally: config.tally.baseUrl,
     endpoints: [
+      'GET  /api/health',
       'GET  /api/tally/health',
       'GET  /api/tally/sync',
       'GET  /api/tally/data',
@@ -75,6 +78,18 @@ app.get('/', (_req, res) => {
       'GET  /api/tally/outstanding',
       'GET  /api/tally/inventory',
     ],
+  });
+});
+
+// Overall service health — checks Postgres reachability. Useful right after
+// wiring up PG_HOST/PG_PASSWORD on the AWS box to confirm the VM firewall is
+// actually letting this server through.
+app.get('/api/health', async (_req, res) => {
+  const db = await dbPool.healthCheck();
+  res.status(db.ok ? 200 : 503).json({
+    ok: db.ok,
+    dataSource: config.dataSource,
+    db,
   });
 });
 
@@ -104,9 +119,11 @@ app.use((err, req, res, _next) => {
 // ─── Start Server ─────────────────────────────────────────────────────────────
 app.listen(config.port, () => {
   logger.success(`🟢 Wallnut API running on http://localhost:${config.port}`);
+  logger.info(`   Data source : ${config.dataSource}`);
   logger.info(`   Tally target: ${config.tally.baseUrl} (company: "${config.tally.companyName}")`);
   logger.info(`   Environment : ${config.env}`);
   logger.info(`   Endpoints   :`);
+  logger.info(`     GET  http://localhost:${config.port}/api/health`);
   logger.info(`     GET  http://localhost:${config.port}/api/tally/health`);
   logger.info(`     POST http://localhost:${config.port}/api/tally/import`);
   logger.info(`     GET  http://localhost:${config.port}/api/tally/sales`);

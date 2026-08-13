@@ -3,52 +3,119 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * Express request handlers for all Tally-related endpoints.
  *
- * Import endpoints:
+ * Data-source dispatch (config.dataSource, i.e. DATA_SOURCE env var):
+ *   'db'    — read from PostgreSQL on the Antraweb VM (production). Falls
+ *             back to local demo data if Postgres is unreachable.
+ *   'tally' — hit TallyPrime's XML API directly (local dev only). Falls back
+ *             to local demo data on any error (tallyFetchService already
+ *             handles this).
+ *   'local' — always serve the bundled demo dataset from data.js.
+ *
+ * Import endpoints (unrelated to dataSource — always write straight to Tally):
  *  POST /api/tally/import          — imports all vouchers from data.js
  *  POST /api/tally/import/:vchNo   — imports a single voucher
  *
- * Fetch endpoints (data from Tally → JSON):
+ * Fetch endpoints (data → JSON, shaped per utils/salesAggregations.js):
  *  GET  /api/tally/sales
  *  GET  /api/tally/dealers
  *  GET  /api/tally/outstanding
  *  GET  /api/tally/inventory
+ *  GET  /api/tally/data            — full salesData array, consumed by RoleContext
+ *  GET  /api/tally/sync            — same as /data but bypasses the DB cache
  *  GET  /api/tally/health          — checks if Tally is reachable
  */
 
 'use strict';
 
+const config = require('../config');
 const { importAllVouchers, importSingleVoucher } = require('../services/tallyImportService');
-const { fetchSales, fetchDealers, fetchOutstanding, fetchInventory, fetchLiveSalesData } = require('../services/tallyFetchService');
+const tallyFetchService = require('../services/tallyFetchService');
+const dbDataService = require('../services/dbDataService');
 const { salesData, allDealers, allSalesOfficers, inventorySummary } = require('../data');
+const { summarizeSales, summarizeDealers, summarizeOutstanding, summarizeInventory } = require('../utils/salesAggregations');
 const logger = require('../utils/logger');
 
-// ─── Live Tally Data Fetcher ──────────────────────────────────────────────────
+// ─── Data-source dispatch ─────────────────────────────────────────────────────
 
 /**
- * Tries to pull live vouchers from Tally's Day Book.
- * Returns salesData-format records with source='tally'.
- * Falls back to local data.js with source='local' on any error.
+ * Runs the fetcher for config.dataSource, always falling back to local demo
+ * data so the dashboard never renders empty.
+ *   dbFn    — called when DATA_SOURCE=db
+ *   tallyFn — called when DATA_SOURCE=tally (already falls back to local internally)
+ *   localFn — called when DATA_SOURCE=local, and as the final fallback for 'db'
  */
-async function fetchLiveTallyData() {
-  try {
-    const result = await fetchLiveSalesData();
-    if (result && result.salesData && result.salesData.length > 0) {
-      logger.success(`getAllData: ${result.salesData.length} live records fetched from Tally.`);
-      return { ...result, source: 'tally', lastSync: new Date().toISOString() };
+async function withDataSource(label, { dbFn, tallyFn, localFn }) {
+  if (config.dataSource === 'db') {
+    try {
+      return await dbFn();
+    } catch (err) {
+      logger.warn(`${label}: Postgres unavailable — using local demo data.`, { reason: err.message });
+      return localFn();
     }
-    // Tally responded but returned zero records — fall through to local
-    logger.warn('getAllData: Tally returned 0 records — using local demo data.');
-  } catch (err) {
-    logger.warn('getAllData: Tally unreachable — using local demo data.', { reason: err.message });
   }
+  if (config.dataSource === 'tally') {
+    return tallyFn();
+  }
+  return localFn();
+}
 
-  return {
+/**
+ * Resolves the full salesData array (the payload RoleContext actually
+ * consumes) per config.dataSource.
+ * @param {{ bypassCache?: boolean }} opts
+ */
+async function fetchDashboardData({ bypassCache = false } = {}) {
+  const localFallback = () => ({
     source: 'local',
     lastSync: null,
     salesData,
     allDealers,
     allSalesOfficers,
     inventorySummary,
+  });
+
+  if (config.dataSource === 'db') {
+    try {
+      const result = await dbDataService.fetchLiveSalesData({ bypassCache });
+      if (result.salesData.length > 0) {
+        logger.success(`fetchDashboardData: ${result.salesData.length} records from Postgres.`);
+        return { source: 'db', lastSync: new Date().toISOString(), salesData: result.salesData };
+      }
+      logger.warn('fetchDashboardData: Postgres returned 0 records — using local demo data.');
+    } catch (err) {
+      logger.warn('fetchDashboardData: Postgres unavailable — using local demo data.', { reason: err.message });
+    }
+    return localFallback();
+  }
+
+  if (config.dataSource === 'tally') {
+    try {
+      const result = await tallyFetchService.fetchLiveSalesData();
+      if (result && result.salesData && result.salesData.length > 0) {
+        logger.success(`fetchDashboardData: ${result.salesData.length} live records fetched from Tally.`);
+        return { ...result, source: 'tally', lastSync: new Date().toISOString() };
+      }
+      logger.warn('fetchDashboardData: Tally returned 0 records — using local demo data.');
+    } catch (err) {
+      logger.warn('fetchDashboardData: Tally unreachable — using local demo data.', { reason: err.message });
+    }
+    return localFallback();
+  }
+
+  return localFallback();
+}
+
+function buildDashboardResponse(liveData) {
+  return {
+    ok: true,
+    source: liveData.source,
+    lastSync: liveData.lastSync,
+    data: {
+      salesData:        liveData.salesData,
+      allDealers:       liveData.allDealers       || allDealers,
+      allSalesOfficers: liveData.allSalesOfficers || allSalesOfficers,
+      inventorySummary: liveData.inventorySummary || inventorySummary,
+    },
   };
 }
 
@@ -106,7 +173,11 @@ async function importOne(req, res) {
 async function getSales(req, res) {
   try {
     const { from, to } = req.query;
-    const data = await fetchSales({ from, to });
+    const data = await withDataSource('getSales', {
+      dbFn:    () => dbDataService.fetchSales({ from, to }),
+      tallyFn: () => tallyFetchService.fetchSales({ from, to }),
+      localFn: () => summarizeSales(salesData, 'local'),
+    });
     return res.json({ ok: true, data });
   } catch (err) {
     logger.error('getSales controller error.', { message: err.message });
@@ -120,7 +191,11 @@ async function getSales(req, res) {
  */
 async function getDealers(req, res) {
   try {
-    const data = await fetchDealers();
+    const data = await withDataSource('getDealers', {
+      dbFn:    () => dbDataService.fetchDealers(),
+      tallyFn: () => tallyFetchService.fetchDealers(),
+      localFn: () => summarizeDealers(salesData, 'local'),
+    });
     return res.json({ ok: true, data });
   } catch (err) {
     logger.error('getDealers controller error.', { message: err.message });
@@ -134,7 +209,11 @@ async function getDealers(req, res) {
  */
 async function getOutstanding(req, res) {
   try {
-    const data = await fetchOutstanding();
+    const data = await withDataSource('getOutstanding', {
+      dbFn:    () => dbDataService.fetchOutstanding(),
+      tallyFn: () => tallyFetchService.fetchOutstanding(),
+      localFn: () => summarizeOutstanding(salesData, 'local'),
+    });
     return res.json({ ok: true, data });
   } catch (err) {
     logger.error('getOutstanding controller error.', { message: err.message });
@@ -148,7 +227,11 @@ async function getOutstanding(req, res) {
  */
 async function getInventory(req, res) {
   try {
-    const data = await fetchInventory();
+    const data = await withDataSource('getInventory', {
+      dbFn:    () => dbDataService.fetchInventory(),
+      tallyFn: () => tallyFetchService.fetchInventory(),
+      localFn: () => summarizeInventory(salesData, 'local'),
+    });
     return res.json({ ok: true, data });
   } catch (err) {
     logger.error('getInventory controller error.', { message: err.message });
@@ -162,7 +245,6 @@ async function getInventory(req, res) {
  */
 async function healthCheck(req, res) {
   const axios  = require('axios');
-  const config = require('../config');
 
   const pingXml = `<?xml version="1.0"?><ENVELOPE><HEADER><TALLYREQUEST>Export Data</TALLYREQUEST></HEADER><BODY><EXPORTDATA><REQUESTDESC><REPORTNAME>List of Companies</REPORTNAME></REQUESTDESC></EXPORTDATA></BODY></ENVELOPE>`;
 
@@ -185,24 +267,14 @@ async function healthCheck(req, res) {
 
 /**
  * GET /api/tally/data
- * Returns dashboard data. Tries to fetch live vouchers from Tally's Day Book first.
- * Falls back to local data.js (demo) if Tally is unreachable.
- * Response includes `source`: 'tally' | 'local' so the frontend can show a badge.
+ * Returns dashboard data per config.dataSource (db → tally → local, with
+ * fallback at every stage). Cached for config.cacheTtlMs when reading from
+ * Postgres. Response includes `source` so the frontend can show a badge.
  */
 async function getAllData(req, res) {
   try {
-    const liveData = await fetchLiveTallyData();
-    return res.json({
-      ok: true,
-      source: liveData.source,
-      lastSync: liveData.lastSync,
-      data: {
-        salesData:        liveData.salesData,
-        allDealers:       liveData.allDealers       || allDealers,
-        allSalesOfficers: liveData.allSalesOfficers || allSalesOfficers,
-        inventorySummary: liveData.inventorySummary || inventorySummary,
-      },
-    });
+    const liveData = await fetchDashboardData();
+    return res.json(buildDashboardResponse(liveData));
   } catch (err) {
     logger.error('getAllData error.', { message: err.message });
     return res.status(500).json({ ok: false, message: err.message, data: null });
@@ -211,24 +283,14 @@ async function getAllData(req, res) {
 
 /**
  * GET /api/tally/sync
- * Force-refresh: fetches fresh data from Tally and returns it.
+ * Force-refresh: bypasses the Postgres cache and returns fresh data.
  * Same shape as /api/tally/data.
  */
 async function syncFromTally(req, res) {
   try {
-    logger.info('Manual sync requested — fetching from Tally…');
-    const liveData = await fetchLiveTallyData();
-    return res.json({
-      ok: true,
-      source: liveData.source,
-      lastSync: liveData.lastSync,
-      data: {
-        salesData:        liveData.salesData,
-        allDealers:       liveData.allDealers       || allDealers,
-        allSalesOfficers: liveData.allSalesOfficers || allSalesOfficers,
-        inventorySummary: liveData.inventorySummary || inventorySummary,
-      },
-    });
+    logger.info('Manual sync requested — fetching fresh data…');
+    const liveData = await fetchDashboardData({ bypassCache: true });
+    return res.json(buildDashboardResponse(liveData));
   } catch (err) {
     logger.error('syncFromTally error.', { message: err.message });
     return res.status(500).json({ ok: false, message: err.message, data: null });

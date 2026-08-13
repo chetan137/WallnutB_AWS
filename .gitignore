@@ -1,3 +1,8 @@
 node_modules/
-.env
 *.log
+
+# Environment files — contain the Postgres password.
+# .env.example is the only one that may be committed.
+.env
+.env.*
+!.env.example

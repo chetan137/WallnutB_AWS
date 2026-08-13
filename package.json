@@ -9,7 +9,13 @@
     "import": "node scripts/runImport.js",
     "lint": "eslint . --ext .js"
   },
-  "keywords": ["tally", "wallnut", "erp", "construction", "sales"],
+  "keywords": [
+    "tally",
+    "wallnut",
+    "erp",
+    "construction",
+    "sales"
+  ],
   "author": "Wallnut Chemicals",
   "license": "ISC",
   "dependencies": {
@@ -17,6 +23,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "pg": "^8.22.0",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {

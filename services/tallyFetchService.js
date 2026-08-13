@@ -28,6 +28,7 @@ const {
   buildInventoryRequest,
   escapeXml,
 } = require('../utils/xmlGenerator');
+const { summarizeSales, summarizeDealers, summarizeOutstanding } = require('../utils/salesAggregations');
 
 // ─── Low-level Tally HTTP helper ──────────────────────────────────────────────
 
@@ -78,122 +79,15 @@ function num(val) {
 // ─── Local-data fallbacks (always work, no Tally needed) ─────────────────────
 
 function localSalesSummary() {
-  // Monthly sales aggregation
-  const monthly = {};
-  const byState = {};
-  const byOfficer = {};
-  const byProduct = {};
-
-  salesData.forEach((r) => {
-    const ym = r.date.slice(0, 7); // "YYYY-MM"
-
-    // Monthly
-    if (!monthly[ym]) monthly[ym] = { month: ym, revenue: 0, txnCount: 0, qty: 0 };
-    monthly[ym].revenue   += r.amount;
-    monthly[ym].txnCount  += 1;
-    monthly[ym].qty       += r.quantity;
-
-    // By state
-    if (!byState[r.state]) byState[r.state] = { state: r.state, revenue: 0, txnCount: 0 };
-    byState[r.state].revenue  += r.amount;
-    byState[r.state].txnCount += 1;
-
-    // By officer
-    if (!byOfficer[r.salesMan]) byOfficer[r.salesMan] = { name: r.salesMan, district: r.areaCity, state: r.state, revenue: 0, txnCount: 0 };
-    byOfficer[r.salesMan].revenue  += r.amount;
-    byOfficer[r.salesMan].txnCount += 1;
-
-    // By product
-    if (!byProduct[r.itemName]) byProduct[r.itemName] = { name: r.itemName, category: r.stockCategory, revenue: 0, qty: 0 };
-    byProduct[r.itemName].revenue += r.amount;
-    byProduct[r.itemName].qty     += r.quantity;
-  });
-
-  const totalRevenue = salesData.reduce((s, r) => s + r.amount, 0);
-
-  return {
-    source: 'local',
-    totalRevenue,
-    totalTransactions: salesData.length,
-    monthly: Object.values(monthly).sort((a, b) => a.month.localeCompare(b.month)),
-    byState: Object.values(byState).sort((a, b) => b.revenue - a.revenue),
-    byOfficer: Object.values(byOfficer).sort((a, b) => b.revenue - a.revenue),
-    byProduct: Object.values(byProduct).sort((a, b) => b.revenue - a.revenue),
-    recentVouchers: salesData.slice(0, 20).map((r) => ({
-      vchNo: r.vchNo,
-      date: r.date,
-      partyName: r.partyName,
-      amount: r.amount,
-      vchType: r.vchType,
-      state: r.state,
-      salesMan: r.salesMan,
-    })),
-  };
+  return summarizeSales(salesData, 'local');
 }
 
 function localDealerData() {
-  const dealerStats = {};
-
-  salesData.forEach((r) => {
-    if (!dealerStats[r.partyName]) {
-      dealerStats[r.partyName] = {
-        name: r.partyName,
-        salesOfficer: r.salesMan,
-        district: r.areaCity,
-        state: r.state,
-        totalRevenue: 0,
-        totalOutstanding: 0,
-        txnCount: 0,
-        lastTransactionDate: r.date,
-      };
-    }
-    const d = dealerStats[r.partyName];
-    d.totalRevenue      += r.amount;
-    d.totalOutstanding  += r.finalOutstanding;
-    d.txnCount          += 1;
-    if (r.date > d.lastTransactionDate) d.lastTransactionDate = r.date;
-  });
-
-  return {
-    source: 'local',
-    totalDealers: Object.keys(dealerStats).length,
-    dealers: Object.values(dealerStats).sort((a, b) => b.totalRevenue - a.totalRevenue),
-  };
+  return summarizeDealers(salesData, 'local');
 }
 
 function localOutstandingData() {
-  const partyOutstanding = {};
-
-  salesData.forEach((r) => {
-    if (r.finalOutstanding <= 0) return;
-    if (!partyOutstanding[r.partyName]) {
-      partyOutstanding[r.partyName] = {
-        partyName: r.partyName,
-        salesOfficer: r.salesMan,
-        district: r.areaCity,
-        state: r.state,
-        totalOutstanding: 0,
-        totalBilled: 0,
-        invoiceCount: 0,
-        oldestDueDate: r.date,
-      };
-    }
-    const p = partyOutstanding[r.partyName];
-    p.totalOutstanding += r.finalOutstanding;
-    p.totalBilled      += r.amount;
-    p.invoiceCount     += 1;
-    if (r.date < p.oldestDueDate) p.oldestDueDate = r.date;
-  });
-
-  const list = Object.values(partyOutstanding)
-    .sort((a, b) => b.totalOutstanding - a.totalOutstanding);
-
-  return {
-    source: 'local',
-    totalOutstanding: list.reduce((s, p) => s + p.totalOutstanding, 0),
-    totalParties: list.length,
-    outstanding: list,
-  };
+  return summarizeOutstanding(salesData, 'local');
 }
 
 function localInventoryData() {
