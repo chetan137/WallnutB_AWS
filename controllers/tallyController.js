@@ -283,6 +283,38 @@ async function getFinancials(req, res) {
 }
 
 /**
+ * GET /api/tally/receivables-aging
+ * Customer-wise debtors aging (mirror of /payables for money owed TO us).
+ */
+async function getReceivablesAging(req, res) {
+  return dbOnly(res, 'getReceivablesAging', () => dbDataService.fetchReceivablesAging());
+}
+
+/**
+ * GET /api/tally/pareto
+ * Top customers / top products by revenue with cumulative % (80/20 rule).
+ */
+async function getPareto(req, res) {
+  return dbOnly(res, 'getPareto', () => dbDataService.fetchParetoAnalysis());
+}
+
+/**
+ * GET /api/tally/abc-analysis
+ * Items classified A/B/C by sales-revenue contribution.
+ */
+async function getAbcAnalysis(req, res) {
+  return dbOnly(res, 'getAbcAnalysis', () => dbDataService.fetchAbcAnalysis());
+}
+
+/**
+ * GET /api/tally/slow-moving-stock
+ * Items bucketed by days since their last real inventory movement.
+ */
+async function getSlowMovingStock(req, res) {
+  return dbOnly(res, 'getSlowMovingStock', () => dbDataService.fetchSlowMovingStock());
+}
+
+/**
  * GET /api/tally/health
  * Pings the Tally XML port and reports reachability.
  */
@@ -343,5 +375,6 @@ async function syncFromTally(req, res) {
 module.exports = {
   importAll, importOne, getSales, getDealers, getOutstanding, getInventory,
   getPayables, getCashFlow, getFinancials,
+  getReceivablesAging, getPareto, getAbcAnalysis, getSlowMovingStock,
   healthCheck, getAllData, syncFromTally,
 };

@@ -19,6 +19,10 @@ const {
   getPayables,
   getCashFlow,
   getFinancials,
+  getReceivablesAging,
+  getPareto,
+  getAbcAnalysis,
+  getSlowMovingStock,
   healthCheck,
   getAllData,
   syncFromTally,
@@ -67,6 +71,22 @@ router.get('/cashflow', getCashFlow);
 // GET /api/tally/financials
 // P&L + Balance Sheet per company, from Tally's authoritative group totals (db-only).
 router.get('/financials', getFinancials);
+
+// GET /api/tally/receivables-aging
+// Customer-wise debtors aging — mirror of /payables for money owed TO us (db-only).
+router.get('/receivables-aging', getReceivablesAging);
+
+// GET /api/tally/pareto
+// Top customers / top products by revenue with cumulative % (80/20 rule) (db-only).
+router.get('/pareto', getPareto);
+
+// GET /api/tally/abc-analysis
+// Items classified A/B/C by sales-revenue contribution (db-only).
+router.get('/abc-analysis', getAbcAnalysis);
+
+// GET /api/tally/slow-moving-stock
+// Items bucketed by days since their last real inventory movement (db-only).
+router.get('/slow-moving-stock', getSlowMovingStock);
 
 // GET /api/tally/data
 // Returns full salesData array — consumed by the React dashboard (RoleContext).

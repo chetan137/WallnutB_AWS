@@ -81,7 +81,14 @@ async function fetchSalesRecords({ from, to, companyId } = {}) {
       v.date                                           AS "date",
       v.vch_type                                       AS "vchType",
       v.party_name                                     AS "partyName",
-      vie.item_name                                    AS "itemName",
+      -- tallybackend used to fabricate an item name from free-text narration
+      -- when a voucher had no real inventory line (fixed there in commit
+      -- cd73651, but rows synced before that fix still carry the garbage —
+      -- e.g. "Being Credit note raised for Exhibition done at..."). Blank
+      -- it out here rather than dropping the row, so the real amount still
+      -- counts toward revenue — only the (never-valid) item label is lost.
+      CASE WHEN vie.item_name ILIKE 'Being %' OR vie.item_name ILIKE '(Being%' OR vie.item_name ILIKE 'Being'
+           THEN NULL ELSE vie.item_name END              AS "itemName",
       COALESCE(vie.quantity, 0)                        AS "quantity",
       vie.unit                                         AS "units",
       COALESCE(vie.rate, 0)                            AS "rate",
@@ -188,6 +195,57 @@ async function fetchPayables({ companyId } = {}) {
     totalPayable: parties.reduce((s, p) => s + p.amountPayable, 0),
     totalVendors: parties.length,
     payables: parties,
+    aging: aging.sort((a, b) => bucketOrder.indexOf(a.bucket) - bucketOrder.indexOf(b.bucket)),
+  };
+}
+
+/**
+ * Customer-wise receivables aging — the mirror of fetchPayables, for money
+ * owed TO the company. Sourced from bills_receivable (bill-level, with
+ * overdue_days already computed by the sync engine — same tag structure as
+ * bills_payable; values are stored positive per parseBillsReceivable's
+ * Math.abs(BILLCL) handling of Tally's negative-receivable convention).
+ */
+async function fetchReceivablesAging({ companyId } = {}) {
+  const params = [];
+  let companyFilter = '';
+  if (companyId) {
+    const cid = await resolveCompanyId(companyId);
+    params.push(cid);
+    companyFilter = ` AND company_id = $${params.length}`;
+  }
+
+  const { rows: parties } = await query(`
+    SELECT party_name AS "partyName", SUM(amount) AS "amountReceivable", COUNT(*) AS "billCount"
+    FROM bills_receivable
+    WHERE 1=1 ${companyFilter}
+    GROUP BY party_name
+    ORDER BY "amountReceivable" DESC
+  `, params);
+
+  const { rows: aging } = await query(`
+    SELECT
+      CASE
+        WHEN overdue_days <= 0  THEN 'Not Due'
+        WHEN overdue_days <= 30 THEN '1-30 days'
+        WHEN overdue_days <= 60 THEN '31-60 days'
+        WHEN overdue_days <= 90 THEN '61-90 days'
+        ELSE '90+ days'
+      END AS bucket,
+      COUNT(*) AS "billCount",
+      SUM(amount) AS "amount"
+    FROM bills_receivable
+    WHERE 1=1 ${companyFilter}
+    GROUP BY 1
+  `, params);
+
+  const bucketOrder = ['Not Due', '1-30 days', '31-60 days', '61-90 days', '90+ days'];
+
+  return {
+    source: 'db',
+    totalReceivable: parties.reduce((s, p) => s + p.amountReceivable, 0),
+    totalCustomers: parties.length,
+    customers: parties,
     aging: aging.sort((a, b) => bucketOrder.indexOf(a.bucket) - bucketOrder.indexOf(b.bucket)),
   };
 }
@@ -334,6 +392,151 @@ async function fetchFinancials({ companyId } = {}) {
   return { source: 'db', companies: Object.values(byCompany) };
 }
 
+/**
+ * Pareto (80/20) analysis — top customers and top products by revenue, each
+ * with a running cumulative % so the frontend can mark where the 80% line
+ * falls. Built from the same sales/credit-note records as fetchSales.
+ */
+async function fetchParetoAnalysis({ companyId } = {}) {
+  const records = await fetchSalesRecords({ companyId });
+
+  function paretoOf(recs, keyFn) {
+    const totals = {};
+    for (const r of recs) {
+      const key = keyFn(r);
+      if (!key) continue;
+      totals[key] = (totals[key] || 0) + r.amount;
+    }
+    const sorted = Object.entries(totals)
+      .map(([name, revenue]) => ({ name, revenue }))
+      .sort((a, b) => b.revenue - a.revenue);
+    const grandTotal = sorted.reduce((s, r) => s + r.revenue, 0);
+    let running = 0;
+    return sorted.map((r) => {
+      running += r.revenue;
+      const cumulativePct = grandTotal > 0 ? (running / grandTotal) * 100 : 0;
+      return { ...r, cumulativePct: Math.round(cumulativePct * 10) / 10, in80Pct: cumulativePct <= 80 };
+    });
+  }
+
+  const byCustomer = paretoOf(records, (r) => r.partyName);
+  const byProduct  = paretoOf(records, (r) => r.itemName);
+
+  return {
+    source: 'db',
+    customers: byCustomer,
+    products: byProduct,
+    topCustomerCount: byCustomer.filter((c) => c.in80Pct).length,
+    topProductCount: byProduct.filter((p) => p.in80Pct).length,
+  };
+}
+
+/**
+ * ABC analysis by item. Tally's stock_items sync only captures GROUP-level
+ * rollups here (Finished Goods / Raw Material / Packing Material / ...),
+ * not individual products — verified live: zero name overlap between
+ * stock_items and voucher_inventory_entries.item_name — so true
+ * inventory-holding-value ABC isn't possible with the current sync (would
+ * need tallybackend to fetch Tally's actual per-item STOCKITEM collection
+ * instead of falling back to the group-level Stock Summary display report).
+ * Classifies by SALES REVENUE contribution instead — a standard, valid ABC
+ * variant — using the classic 70/20/10 cumulative thresholds: A = items up
+ * to 70% of revenue, B = next 20% (70-90%), C = remaining 10% (90-100%).
+ */
+async function fetchAbcAnalysis({ companyId } = {}) {
+  const records = await fetchSalesRecords({ companyId });
+
+  const totals = {};
+  for (const r of records) {
+    if (!r.itemName) continue;
+    if (!totals[r.itemName]) totals[r.itemName] = { name: r.itemName, revenue: 0, qty: 0 };
+    totals[r.itemName].revenue += r.amount;
+    totals[r.itemName].qty += r.quantity;
+  }
+
+  const sorted = Object.values(totals).sort((a, b) => b.revenue - a.revenue);
+  const grandTotal = sorted.reduce((s, r) => s + r.revenue, 0);
+
+  let running = 0;
+  const classified = sorted.map((item) => {
+    running += item.revenue;
+    const cumulativePct = grandTotal > 0 ? (running / grandTotal) * 100 : 0;
+    const category = cumulativePct <= 70 ? 'A' : cumulativePct <= 90 ? 'B' : 'C';
+    return { ...item, cumulativePct: Math.round(cumulativePct * 10) / 10, category };
+  });
+
+  return {
+    source: 'db',
+    basis: 'sales-revenue', // NOT inventory-holding-value — see function doc above
+    items: classified,
+    counts: {
+      A: classified.filter((i) => i.category === 'A').length,
+      B: classified.filter((i) => i.category === 'B').length,
+      C: classified.filter((i) => i.category === 'C').length,
+    },
+  };
+}
+
+/**
+ * Slow-moving / non-moving stock — last transaction date per item across
+ * ANY genuine inventory movement (sales, purchase, stock/manufacturing
+ * journal — not just sales), bucketed by days since that last movement.
+ * Excludes Tally's four purely-financial voucher types (Journal, Payment,
+ * Receipt, Contra) at the SQL level rather than only relying on the
+ * tallybackend parser fix, so this reads correctly even against rows that
+ * were synced before that fix was deployed.
+ */
+async function fetchSlowMovingStock({ companyId } = {}) {
+  const params = [];
+  let companyFilter = '';
+  if (companyId) {
+    const cid = await resolveCompanyId(companyId);
+    params.push(cid);
+    companyFilter = ` AND v.company_id = $${params.length}`;
+  }
+
+  const { rows } = await query(`
+    SELECT
+      vie.item_name                AS "itemName",
+      MAX(v.date)                  AS "lastMovementDate",
+      SUM(vie.quantity)            AS "totalQtyMoved",
+      SUM(vie.amount)              AS "totalValueMoved",
+      COUNT(*)                     AS "txnCount"
+    FROM voucher_inventory_entries vie
+    JOIN vouchers v ON v.id = vie.voucher_id
+    WHERE v.is_cancelled = false
+      AND vie.item_name IS NOT NULL AND vie.item_name != ''
+      AND LOWER(v.vch_type) !~ '^(journal|payment|receipt|contra)'
+      -- Narration-fabricated garbage item names (see fetchSalesRecords for
+      -- the full story) — safe to drop the row entirely here, unlike in
+      -- fetchSalesRecords, since this endpoint has no revenue total that a
+      -- dropped row could silently undercount.
+      AND vie.item_name NOT ILIKE 'Being %' AND vie.item_name NOT ILIKE '(Being%' AND vie.item_name NOT ILIKE 'Being'
+      ${companyFilter}
+    GROUP BY vie.item_name
+    ORDER BY "lastMovementDate" ASC
+  `, params);
+
+  const now = Date.now();
+  const items = rows.map((r) => {
+    const daysSince = Math.floor((now - new Date(r.lastMovementDate).getTime()) / 86_400_000);
+    const bucket = daysSince <= 90  ? 'Active'
+                 : daysSince <= 180 ? 'Slow-moving (90-180d)'
+                 : daysSince <= 365 ? 'Slow-moving (180-365d)'
+                 : 'Non-moving (365d+)';
+    return { ...r, daysSinceLastMovement: daysSince, bucket };
+  });
+
+  const bucketOrder = ['Active', 'Slow-moving (90-180d)', 'Slow-moving (180-365d)', 'Non-moving (365d+)'];
+  const summary = bucketOrder.map((bucket) => ({
+    bucket,
+    itemCount: items.filter((i) => i.bucket === bucket).length,
+    totalValue: items.filter((i) => i.bucket === bucket).reduce((s, i) => s + i.totalValueMoved, 0),
+  }));
+
+  return { source: 'db', items, summary };
+}
+
 module.exports = {
   fetchSalesRecords,
   fetchLiveSalesData,
@@ -342,6 +545,10 @@ module.exports = {
   fetchOutstanding,
   fetchInventory,
   fetchPayables,
+  fetchReceivablesAging,
   fetchCashFlow,
   fetchFinancials,
+  fetchParetoAnalysis,
+  fetchAbcAnalysis,
+  fetchSlowMovingStock,
 };
