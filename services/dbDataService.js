@@ -63,13 +63,18 @@ const cache = createTtlCache();
  *    views will stay empty for real data until that's addressed upstream.
  */
 async function fetchSalesRecords({ from, to, companyId } = {}) {
+  // BUG FIX: this only scoped to one company when a companyId was
+  // explicitly passed — the main dashboard's default call passes none,
+  // so it was combining BOTH companies' vouchers (a closed historical
+  // FY and the live current one) into one merged view. resolveCompanyId()
+  // already auto-picks the active non-historical company when no override
+  // is given, so always resolving (instead of only resolving when
+  // companyId is truthy) fixes the default case without changing the
+  // explicit-override behavior at all.
   const params = [];
-  let companyFilter = '';
-  if (companyId) {
-    const cid = await resolveCompanyId(companyId);
-    params.push(cid);
-    companyFilter = ` AND v.company_id = $${params.length}`;
-  }
+  const cid = await resolveCompanyId(companyId);
+  params.push(cid);
+  const companyFilter = ` AND v.company_id = $${params.length}`;
 
   let dateFilter = '';
   if (from) { params.push(from); dateFilter += ` AND v.date >= $${params.length}`; }
