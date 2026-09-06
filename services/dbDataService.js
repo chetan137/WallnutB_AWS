@@ -103,7 +103,17 @@ async function fetchSalesRecords({ from, to, companyId } = {}) {
       COALESCE(NULLIF(vie.state, ''), l.state, '')     AS "state",
       COALESCE(si.parent_group, '')                    AS "stockGroup",
       COALESCE(si.parent_group, '')                    AS "stockCategory",
-      COALESCE(br.amount, 0)                           AS "finalOutstanding"
+      -- BUG FIX: bills_receivable is bill-level (one row per bill), but this
+      -- query is at (voucher x inventory-line) grain — a voucher with N
+      -- line items joined the SAME br.amount onto all N rows, so summing
+      -- finalOutstanding over any scope multiplied every bill's amount by
+      -- however many line items its voucher had (avg ~2.8x for this data,
+      -- verified against a direct bills_receivable total: the old query
+      -- summed to 5x the real figure for company 1). Attribute the full
+      -- amount to only the first line of each voucher (by vie.id) so a SUM
+      -- across rows counts each bill exactly once, matching bills_receivable.
+      CASE WHEN ROW_NUMBER() OVER (PARTITION BY v.id ORDER BY vie.id) = 1
+           THEN COALESCE(br.amount, 0) ELSE 0 END        AS "finalOutstanding"
     FROM vouchers v
     LEFT JOIN voucher_inventory_entries vie ON vie.voucher_id = v.id
     LEFT JOIN stock_items si
