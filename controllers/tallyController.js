@@ -31,6 +31,7 @@ const config = require('../config');
 const { importAllVouchers, importSingleVoucher } = require('../services/tallyImportService');
 const tallyFetchService = require('../services/tallyFetchService');
 const dbDataService = require('../services/dbDataService');
+const { listCompanies } = require('../db/companies');
 const { salesData, allDealers, allSalesOfficers, inventorySummary } = require('../data');
 const { summarizeSales, summarizeDealers, summarizeOutstanding, summarizeInventory } = require('../utils/salesAggregations');
 const logger = require('../utils/logger');
@@ -259,35 +260,51 @@ async function dbOnly(res, label, fn) {
 }
 
 /**
- * GET /api/tally/payables
- * Vendor-wise outstanding payables + aging buckets.
+ * GET /api/tally/payables?companyId=1
+ * Vendor-wise outstanding payables + aging buckets. Combines every synced
+ * company when companyId is omitted.
  */
 async function getPayables(req, res) {
-  return dbOnly(res, 'getPayables', () => dbDataService.fetchPayables());
+  const { companyId } = req.query;
+  return dbOnly(res, 'getPayables', () => dbDataService.fetchPayables({ companyId }));
 }
 
 /**
- * GET /api/tally/cashflow
+ * GET /api/tally/cashflow?companyId=1
  * Receipts & Payments summary per company.
  */
 async function getCashFlow(req, res) {
-  return dbOnly(res, 'getCashFlow', () => dbDataService.fetchCashFlow());
+  const { companyId } = req.query;
+  return dbOnly(res, 'getCashFlow', () => dbDataService.fetchCashFlow({ companyId }));
 }
 
 /**
- * GET /api/tally/financials
+ * GET /api/tally/financials?companyId=1
  * P&L + Balance Sheet per company (Tally's authoritative group totals).
  */
 async function getFinancials(req, res) {
-  return dbOnly(res, 'getFinancials', () => dbDataService.fetchFinancials());
+  const { companyId } = req.query;
+  return dbOnly(res, 'getFinancials', () => dbDataService.fetchFinancials({ companyId }));
 }
 
 /**
- * GET /api/tally/receivables-aging
+ * GET /api/tally/receivables-aging?companyId=1
  * Customer-wise debtors aging (mirror of /payables for money owed TO us).
+ * Combines every synced company when companyId is omitted — e.g. "ESS JAY
+ * EMPORIUM" showing 15 bills / Rs32.9L is company 1's 9 bills + company 2's
+ * 6 bills added together, not a single company's real total.
  */
 async function getReceivablesAging(req, res) {
-  return dbOnly(res, 'getReceivablesAging', () => dbDataService.fetchReceivablesAging());
+  const { companyId } = req.query;
+  return dbOnly(res, 'getReceivablesAging', () => dbDataService.fetchReceivablesAging({ companyId }));
+}
+
+/**
+ * GET /api/tally/companies
+ * Lists every synced company for a UI filter dropdown.
+ */
+async function getCompanies(req, res) {
+  return dbOnly(res, 'getCompanies', () => listCompanies());
 }
 
 /**
@@ -376,5 +393,5 @@ module.exports = {
   importAll, importOne, getSales, getDealers, getOutstanding, getInventory,
   getPayables, getCashFlow, getFinancials,
   getReceivablesAging, getPareto, getAbcAnalysis, getSlowMovingStock,
-  healthCheck, getAllData, syncFromTally,
+  getCompanies, healthCheck, getAllData, syncFromTally,
 };

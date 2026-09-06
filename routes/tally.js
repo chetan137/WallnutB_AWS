@@ -23,6 +23,7 @@ const {
   getPareto,
   getAbcAnalysis,
   getSlowMovingStock,
+  getCompanies,
   healthCheck,
   getAllData,
   syncFromTally,
@@ -91,5 +92,9 @@ router.get('/slow-moving-stock', getSlowMovingStock);
 // GET /api/tally/data
 // Returns full salesData array — consumed by the React dashboard (RoleContext).
 router.get('/data', getAllData);
+
+// GET /api/tally/companies
+// Lists every synced company (id, name) for a UI company filter (db-only).
+router.get('/companies', getCompanies);
 
 module.exports = router;

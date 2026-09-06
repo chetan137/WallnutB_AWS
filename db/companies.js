@@ -44,4 +44,19 @@ async function resolveCompanyId(override) {
   return cachedId;
 }
 
-module.exports = { resolveCompanyId };
+/**
+ * Lists every synced company for a UI filter dropdown — e.g. Financials page
+ * "which company" selector, so a user can choose one company instead of the
+ * default combined-across-all-companies view.
+ * @returns {Promise<Array<{id: number, name: string, isHistorical: boolean}>>}
+ */
+async function listCompanies() {
+  const { rows } = await query(`
+    SELECT id, name, is_historical AS "isHistorical"
+    FROM companies
+    ORDER BY fiscal_year_from DESC NULLS LAST, id DESC
+  `);
+  return rows;
+}
+
+module.exports = { resolveCompanyId, listCompanies };
