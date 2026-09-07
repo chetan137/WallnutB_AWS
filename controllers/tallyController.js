@@ -332,6 +332,15 @@ async function getSlowMovingStock(req, res) {
 }
 
 /**
+ * GET /api/tally/eway-bills?companyId=1&from=YYYY-MM-DD&to=YYYY-MM-DD
+ * e-Way bill compliance data (GST Reports > Exchange Reports > e-Way Bill).
+ */
+async function getEwayBills(req, res) {
+  const { companyId, from, to } = req.query;
+  return dbOnly(res, 'getEwayBills', () => dbDataService.fetchEwayBills({ companyId, from, to }));
+}
+
+/**
  * GET /api/tally/health
  * Pings the Tally XML port and reports reachability.
  */
@@ -392,6 +401,6 @@ async function syncFromTally(req, res) {
 module.exports = {
   importAll, importOne, getSales, getDealers, getOutstanding, getInventory,
   getPayables, getCashFlow, getFinancials,
-  getReceivablesAging, getPareto, getAbcAnalysis, getSlowMovingStock,
+  getReceivablesAging, getPareto, getAbcAnalysis, getSlowMovingStock, getEwayBills,
   getCompanies, healthCheck, getAllData, syncFromTally,
 };

@@ -23,6 +23,7 @@ const {
   getPareto,
   getAbcAnalysis,
   getSlowMovingStock,
+  getEwayBills,
   getCompanies,
   healthCheck,
   getAllData,
@@ -96,5 +97,9 @@ router.get('/data', getAllData);
 // GET /api/tally/companies
 // Lists every synced company (id, name) for a UI company filter (db-only).
 router.get('/companies', getCompanies);
+
+// GET /api/tally/eway-bills?companyId=1&from=2026-04-01&to=2026-09-30
+// e-Way bill compliance data (GST Reports > Exchange Reports > e-Way Bill) (db-only).
+router.get('/eway-bills', getEwayBills);
 
 module.exports = router;

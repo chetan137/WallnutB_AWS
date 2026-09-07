@@ -552,6 +552,64 @@ async function fetchSlowMovingStock({ companyId } = {}) {
   return { source: 'db', items, summary };
 }
 
+/**
+ * e-Way bill compliance data (GST Reports > Exchange Reports > e-Way Bill in
+ * Tally). eway_bills only stores e-way-bill-specific fields (see schema.sql)
+ * — party name and invoice amount are joined from the `vouchers` table
+ * (same company_id + vch_no + vch_type the voucher sync already populates)
+ * rather than duplicated, so this always reflects the real invoice total.
+ */
+async function fetchEwayBills({ companyId, from, to } = {}) {
+  const params = [];
+  let companyFilter = '';
+  if (companyId) {
+    const cid = await resolveCompanyId(companyId);
+    params.push(cid);
+    companyFilter = ` AND eb.company_id = $${params.length}`;
+  }
+
+  let dateFilter = '';
+  if (from) { params.push(from); dateFilter += ` AND eb.date >= $${params.length}`; }
+  if (to)   { params.push(to);   dateFilter += ` AND eb.date <= $${params.length}`; }
+
+  const { rows } = await query(`
+    SELECT
+      eb.company_id       AS "companyId",
+      c.name               AS "companyName",
+      eb.vch_no            AS "vchNo",
+      eb.vch_type          AS "vchType",
+      eb.date              AS "date",
+      COALESCE(v.party_name, '')  AS "partyName",
+      COALESCE(v.total_amount, 0) AS "invoiceAmount",
+      eb.party_gstin       AS "partyGstin",
+      eb.irn               AS "irn",
+      eb.eway_bill_no      AS "ewayBillNo",
+      eb.eway_bill_date    AS "ewayBillDate",
+      eb.document_type     AS "documentType",
+      eb.valid_upto        AS "validUpto",
+      eb.updated_date      AS "updatedDate",
+      eb.transporter_name  AS "transporterName",
+      eb.vehicle_number    AS "vehicleNumber",
+      eb.distance_km       AS "distanceKm",
+      eb.has_part_b        AS "hasPartB",
+      eb.status            AS "status"
+    FROM eway_bills eb
+    JOIN companies c ON c.id = eb.company_id
+    LEFT JOIN vouchers v
+      ON v.company_id = eb.company_id AND v.vch_no = eb.vch_no AND v.vch_type = eb.vch_type
+    WHERE 1=1 ${companyFilter} ${dateFilter}
+    ORDER BY eb.date DESC
+  `, params);
+
+  return {
+    source: 'db',
+    bills: rows,
+    totalCount: rows.length,
+    totalInvoiceAmount: rows.reduce((s, r) => s + Number(r.invoiceAmount || 0), 0),
+    withPartB: rows.filter((r) => r.hasPartB).length,
+  };
+}
+
 module.exports = {
   fetchSalesRecords,
   fetchLiveSalesData,
@@ -566,4 +624,5 @@ module.exports = {
   fetchParetoAnalysis,
   fetchAbcAnalysis,
   fetchSlowMovingStock,
+  fetchEwayBills,
 };
