@@ -553,11 +553,14 @@ async function fetchSlowMovingStock({ companyId } = {}) {
 }
 
 /**
- * e-Way bill compliance data (GST Reports > Exchange Reports > e-Way Bill in
- * Tally). eway_bills only stores e-way-bill-specific fields (see schema.sql)
- * — party name and invoice amount are joined from the `vouchers` table
- * (same company_id + vch_no + vch_type the voucher sync already populates)
- * rather than duplicated, so this always reflects the real invoice total.
+ * e-Way bill + e-Invoice compliance data (GST Reports > Exchange Reports in
+ * Tally). eway_bills stores a row whenever a voucher has a real e-way bill
+ * (eway_bill_no) and/or a real e-invoice (irn) — these are separate GST
+ * requirements, so `status` distinguishes 'generated' (has e-way bill) from
+ * 'einvoice_only' (has an IRN but no e-way bill). Party name and invoice
+ * amount are joined from the `vouchers` table (same company_id + vch_no +
+ * vch_type the voucher sync already populates) rather than duplicated, so
+ * this always reflects the real invoice total.
  */
 async function fetchEwayBills({ companyId, from, to } = {}) {
   const params = [];
@@ -607,6 +610,8 @@ async function fetchEwayBills({ companyId, from, to } = {}) {
     totalCount: rows.length,
     totalInvoiceAmount: rows.reduce((s, r) => s + Number(r.invoiceAmount || 0), 0),
     withPartB: rows.filter((r) => r.hasPartB).length,
+    withEwayBill: rows.filter((r) => r.ewayBillNo).length,
+    withEInvoice: rows.filter((r) => r.irn).length,
   };
 }
 
