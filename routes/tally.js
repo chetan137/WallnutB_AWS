@@ -24,6 +24,7 @@ const {
   getAbcAnalysis,
   getSlowMovingStock,
   getEwayBills,
+  getHsnSummary,
   getCompanies,
   healthCheck,
   getAllData,
@@ -101,5 +102,9 @@ router.get('/companies', getCompanies);
 // GET /api/tally/eway-bills?companyId=1&from=2026-04-01&to=2026-09-30
 // e-Way bill compliance data (GST Reports > Exchange Reports > e-Way Bill) (db-only).
 router.get('/eway-bills', getEwayBills);
+
+// GET /api/tally/hsn-summary?companyId=1&from=2026-04-01&to=2026-09-30
+// HSN-wise sales summary for GSTR-1 HSN Summary reporting (db-only).
+router.get('/hsn-summary', getHsnSummary);
 
 module.exports = router;

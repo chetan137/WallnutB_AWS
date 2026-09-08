@@ -341,6 +341,15 @@ async function getEwayBills(req, res) {
 }
 
 /**
+ * GET /api/tally/hsn-summary?companyId=1&from=YYYY-MM-DD&to=YYYY-MM-DD
+ * HSN-wise sales summary for GSTR-1 HSN Summary reporting.
+ */
+async function getHsnSummary(req, res) {
+  const { companyId, from, to } = req.query;
+  return dbOnly(res, 'getHsnSummary', () => dbDataService.fetchHsnSummary({ companyId, from, to }));
+}
+
+/**
  * GET /api/tally/health
  * Pings the Tally XML port and reports reachability.
  */
@@ -401,6 +410,6 @@ async function syncFromTally(req, res) {
 module.exports = {
   importAll, importOne, getSales, getDealers, getOutstanding, getInventory,
   getPayables, getCashFlow, getFinancials,
-  getReceivablesAging, getPareto, getAbcAnalysis, getSlowMovingStock, getEwayBills,
+  getReceivablesAging, getPareto, getAbcAnalysis, getSlowMovingStock, getEwayBills, getHsnSummary,
   getCompanies, healthCheck, getAllData, syncFromTally,
 };

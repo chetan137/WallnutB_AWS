@@ -615,6 +615,57 @@ async function fetchEwayBills({ companyId, from, to } = {}) {
   };
 }
 
+/**
+ * HSN-wise sales summary — the same grouping GSTR-1's "HSN Summary of
+ * Outward Supplies" section needs at return-filing time (HSN code, total
+ * quantity, taxable value sold). hsn_code comes straight from
+ * ALLINVENTORYENTRIES.GSTHSNNAME (see tally/parsers.js) — rows synced
+ * before that field existed, or where Tally has no HSN set on the item
+ * master, group under "Not Set" rather than being silently dropped.
+ *
+ * This is taxable (pre-tax) value only, NOT tax collected — CGST/SGST/IGST
+ * ledger amounts are stored per-VOUCHER (voucher_ledger_entries), not
+ * per-item, so splitting them across HSN codes would need a proportional
+ * estimate rather than a real figure; left out rather than shown as if
+ * it were exact.
+ */
+async function fetchHsnSummary({ companyId, from, to } = {}) {
+  const params = [];
+  let companyFilter = '';
+  if (companyId) {
+    const cid = await resolveCompanyId(companyId);
+    params.push(cid);
+    companyFilter = ` AND v.company_id = $${params.length}`;
+  }
+
+  let dateFilter = '';
+  if (from) { params.push(from); dateFilter += ` AND v.date >= $${params.length}`; }
+  if (to)   { params.push(to);   dateFilter += ` AND v.date <= $${params.length}`; }
+
+  const { rows } = await query(`
+    SELECT
+      COALESCE(NULLIF(vie.hsn_code, ''), 'Not Set') AS "hsnCode",
+      COUNT(DISTINCT vie.item_name)                 AS "itemCount",
+      SUM(vie.quantity)                             AS "totalQuantity",
+      SUM(vie.amount)                                AS "taxableValue"
+    FROM voucher_inventory_entries vie
+    JOIN vouchers v ON v.id = vie.voucher_id
+    WHERE v.is_cancelled = false
+      AND LOWER(v.vch_type) LIKE 'sales%'
+      ${companyFilter} ${dateFilter}
+    GROUP BY 1
+    ORDER BY "taxableValue" DESC
+  `, params);
+
+  return {
+    source: 'db',
+    rows,
+    totalTaxableValue: rows.reduce((s, r) => s + Number(r.taxableValue || 0), 0),
+    hsnCodeCount: rows.filter((r) => r.hsnCode !== 'Not Set').length,
+    notSetValue: rows.find((r) => r.hsnCode === 'Not Set')?.taxableValue || 0,
+  };
+}
+
 module.exports = {
   fetchSalesRecords,
   fetchLiveSalesData,
@@ -630,4 +681,5 @@ module.exports = {
   fetchAbcAnalysis,
   fetchSlowMovingStock,
   fetchEwayBills,
+  fetchHsnSummary,
 };
