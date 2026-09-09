@@ -25,6 +25,7 @@ const {
   getSlowMovingStock,
   getEwayBills,
   getHsnSummary,
+  getCreditTerms,
   getCompanies,
   healthCheck,
   getAllData,
@@ -106,5 +107,9 @@ router.get('/eway-bills', getEwayBills);
 // GET /api/tally/hsn-summary?companyId=1&from=2026-04-01&to=2026-09-30
 // HSN-wise sales summary for GSTR-1 HSN Summary reporting (db-only).
 router.get('/hsn-summary', getHsnSummary);
+
+// GET /api/tally/credit-terms?companyId=1
+// Agreed credit period per bill vs. actual overdue days (db-only).
+router.get('/credit-terms', getCreditTerms);
 
 module.exports = router;

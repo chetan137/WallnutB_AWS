@@ -350,6 +350,16 @@ async function getHsnSummary(req, res) {
 }
 
 /**
+ * GET /api/tally/credit-terms?companyId=1
+ * Credit Terms Compliance — agreed credit period per bill (Tally's
+ * BILLCREDITPERIOD) vs. how many days each customer is actually overdue.
+ */
+async function getCreditTerms(req, res) {
+  const { companyId } = req.query;
+  return dbOnly(res, 'getCreditTerms', () => dbDataService.fetchCreditTermsCompliance({ companyId }));
+}
+
+/**
  * GET /api/tally/health
  * Pings the Tally XML port and reports reachability.
  */
@@ -411,5 +421,6 @@ module.exports = {
   importAll, importOne, getSales, getDealers, getOutstanding, getInventory,
   getPayables, getCashFlow, getFinancials,
   getReceivablesAging, getPareto, getAbcAnalysis, getSlowMovingStock, getEwayBills, getHsnSummary,
+  getCreditTerms,
   getCompanies, healthCheck, getAllData, syncFromTally,
 };

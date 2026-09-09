@@ -666,6 +666,81 @@ async function fetchHsnSummary({ companyId, from, to } = {}) {
   };
 }
 
+/**
+ * Credit Terms Compliance — how many days a customer was actually GIVEN to
+ * pay (Tally's agreed BILLCREDITPERIOD per bill, e.g. "15 Days") vs. how
+ * many days late they actually are (bills_receivable.overdue_days, which
+ * only tells you a bill is late, not by how much relative to what was
+ * agreed). "15 days terms, 45 days overdue" is a very different story from
+ * "60 days terms, 45 days overdue" — same overdue_days, very different
+ * customer behaviour — this report is what makes that visible.
+ *
+ * Only covers bills whose voucher has a real credit_period_days (not every
+ * bill carries one — e.g. cash sales, or Tally has no term set) — for GST
+ * return/collections use, this is the "who to chase and by how much they've
+ * blown past what THEY agreed to" list.
+ */
+async function fetchCreditTermsCompliance({ companyId } = {}) {
+  const params = [];
+  let companyFilter = '';
+  if (companyId) {
+    const cid = await resolveCompanyId(companyId);
+    params.push(cid);
+    companyFilter = ` AND br.company_id = $${params.length}`;
+  }
+
+  const { rows } = await query(`
+    SELECT
+      br.party_name          AS "partyName",
+      br.bill_ref             AS "billRef",
+      br.bill_date             AS "billDate",
+      br.amount                AS "amount",
+      br.due_date              AS "dueDate",
+      br.overdue_days          AS "overdueDays",
+      v.credit_period_label    AS "creditPeriodLabel",
+      v.credit_period_days     AS "creditPeriodDays"
+    FROM bills_receivable br
+    JOIN vouchers v
+      ON v.company_id = br.company_id AND v.vch_no = br.bill_ref AND LOWER(v.vch_type) LIKE 'sales%'
+    WHERE v.credit_period_days IS NOT NULL ${companyFilter}
+    ORDER BY br.overdue_days DESC
+  `, params);
+
+  const byParty = {};
+  for (const r of rows) {
+    if (!byParty[r.partyName]) {
+      byParty[r.partyName] = { partyName: r.partyName, billCount: 0, overdueBillCount: 0, overdueAmount: 0, totalAmount: 0, avgCreditDays: 0, creditDaysSum: 0 };
+    }
+    const p = byParty[r.partyName];
+    p.billCount += 1;
+    p.totalAmount += Number(r.amount || 0);
+    p.creditDaysSum += Number(r.creditPeriodDays || 0);
+    if (r.overdueDays > 0) {
+      p.overdueBillCount += 1;
+      p.overdueAmount += Number(r.amount || 0);
+    }
+  }
+  const parties = Object.values(byParty)
+    .map((p) => ({
+      ...p,
+      avgCreditDays: p.billCount ? Math.round(p.creditDaysSum / p.billCount) : 0,
+      complianceRate: p.billCount ? Math.round(((p.billCount - p.overdueBillCount) / p.billCount) * 1000) / 10 : 100,
+    }))
+    .sort((a, b) => b.overdueAmount - a.overdueAmount);
+
+  const overdueBills = rows.filter((r) => r.overdueDays > 0);
+
+  return {
+    source: 'db',
+    bills: rows,
+    parties,
+    totalBills: rows.length,
+    overdueBillCount: overdueBills.length,
+    overdueAmount: overdueBills.reduce((s, r) => s + Number(r.amount || 0), 0),
+    complianceRate: rows.length ? Math.round(((rows.length - overdueBills.length) / rows.length) * 1000) / 10 : 100,
+  };
+}
+
 module.exports = {
   fetchSalesRecords,
   fetchLiveSalesData,
@@ -682,4 +757,5 @@ module.exports = {
   fetchSlowMovingStock,
   fetchEwayBills,
   fetchHsnSummary,
+  fetchCreditTermsCompliance,
 };
