@@ -26,6 +26,7 @@ const {
   getEwayBills,
   getHsnSummary,
   getCreditTerms,
+  getGstTdsSummary,
   getCompanies,
   healthCheck,
   getAllData,
@@ -111,5 +112,9 @@ router.get('/hsn-summary', getHsnSummary);
 // GET /api/tally/credit-terms?companyId=1
 // Agreed credit period per bill vs. actual overdue days (db-only).
 router.get('/credit-terms', getCreditTerms);
+
+// GET /api/tally/gst-tds-summary?companyId=1&from=2026-04-01&to=2026-09-30
+// GST Output/Input/Net Payable + TDS ledger summary for GSTR-3B/TDS filing (db-only).
+router.get('/gst-tds-summary', getGstTdsSummary);
 
 module.exports = router;

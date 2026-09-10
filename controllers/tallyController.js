@@ -360,6 +360,15 @@ async function getCreditTerms(req, res) {
 }
 
 /**
+ * GET /api/tally/gst-tds-summary?companyId=1&from=YYYY-MM-DD&to=YYYY-MM-DD
+ * GST Output/Input/Net Payable + TDS ledger summary, for GSTR-3B/TDS filing.
+ */
+async function getGstTdsSummary(req, res) {
+  const { companyId, from, to } = req.query;
+  return dbOnly(res, 'getGstTdsSummary', () => dbDataService.fetchGstTdsSummary({ companyId, from, to }));
+}
+
+/**
  * GET /api/tally/health
  * Pings the Tally XML port and reports reachability.
  */
@@ -421,6 +430,6 @@ module.exports = {
   importAll, importOne, getSales, getDealers, getOutstanding, getInventory,
   getPayables, getCashFlow, getFinancials,
   getReceivablesAging, getPareto, getAbcAnalysis, getSlowMovingStock, getEwayBills, getHsnSummary,
-  getCreditTerms,
+  getCreditTerms, getGstTdsSummary,
   getCompanies, healthCheck, getAllData, syncFromTally,
 };

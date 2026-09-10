@@ -741,6 +741,92 @@ async function fetchCreditTermsCompliance({ companyId } = {}) {
   };
 }
 
+/**
+ * GST & TDS Liability Summary — for GSTR-3B / TDS return filing.
+ *
+ * Built entirely from voucher_ledger_entries, which already exists from the
+ * regular voucher sync — Tally's own GST/TDS ledgers (e.g. "Output CGST
+ * 9%", "Input IGST 18%", "TDS on Professional Fees") were already being
+ * captured for every voucher, just never summarized into a report. No new
+ * Tally fetch, no extra load on the VM — purely a new query over data
+ * that's been sitting there.
+ *
+ *  - Output GST  = tax collected on sales (what you owe the government)
+ *  - Input GST   = tax paid on purchases (ITC — what you can claim back)
+ *  - Net Payable = Output − Input, the standard GST math for what's
+ *    actually due when filing
+ *  - TDS rows are grouped as Tally's own ledger names them (e.g. "TDS on
+ *    Rent-Land Building") — shown as-is rather than guessing payable vs.
+ *    receivable, since that depends on ledger setup only the company's
+ *    accountant can confirm.
+ */
+async function fetchGstTdsSummary({ companyId, from, to } = {}) {
+  const params = [];
+  let companyFilter = '';
+  if (companyId) {
+    const cid = await resolveCompanyId(companyId);
+    params.push(cid);
+    companyFilter = ` AND v.company_id = $${params.length}`;
+  }
+
+  let dateFilter = '';
+  if (from) { params.push(from); dateFilter += ` AND v.date >= $${params.length}`; }
+  if (to)   { params.push(to);   dateFilter += ` AND v.date <= $${params.length}`; }
+
+  const { rows } = await query(`
+    SELECT
+      vle.ledger_name         AS "ledgerName",
+      COUNT(*)                 AS "entryCount",
+      SUM(ABS(vle.amount))     AS "absAmount"
+    FROM voucher_ledger_entries vle
+    JOIN vouchers v ON v.id = vle.voucher_id
+    WHERE v.is_cancelled = false
+      AND (
+        vle.ledger_name ~* '^(Output|Input)\\s+(CGST|SGST|IGST)'
+        OR vle.ledger_name ILIKE '%TDS%'
+        OR vle.ledger_name ILIKE '%TCS%'
+        OR vle.ledger_name ILIKE '%GST Payable%'
+      )
+      ${companyFilter} ${dateFilter}
+    GROUP BY vle.ledger_name
+    ORDER BY "absAmount" DESC
+  `, params);
+
+  const gstRows = [];
+  const tdsRows = [];
+  const otherRows = [];
+  let totalOutputGst = 0;
+  let totalInputGst = 0;
+
+  for (const r of rows) {
+    const amount = Number(r.absAmount || 0);
+    const entryCount = Number(r.entryCount || 0);
+    const gstMatch = r.ledgerName.match(/^(Output|Input)\s+(CGST|SGST|IGST)\s*([\d.]+%)?/i);
+
+    if (gstMatch) {
+      const direction = gstMatch[1];
+      gstRows.push({ ledgerName: r.ledgerName, direction, taxType: gstMatch[2].toUpperCase(), rate: gstMatch[3] || '', amount, entryCount });
+      if (direction.toLowerCase() === 'output') totalOutputGst += amount;
+      else totalInputGst += amount;
+    } else if (/TDS|TCS/i.test(r.ledgerName)) {
+      tdsRows.push({ ledgerName: r.ledgerName, amount, entryCount });
+    } else {
+      otherRows.push({ ledgerName: r.ledgerName, amount, entryCount });
+    }
+  }
+
+  return {
+    source: 'db',
+    gstRows: gstRows.sort((a, b) => b.amount - a.amount),
+    tdsRows: tdsRows.sort((a, b) => b.amount - a.amount),
+    otherRows: otherRows.sort((a, b) => b.amount - a.amount),
+    totalOutputGst,
+    totalInputGst,
+    netGstPayable: totalOutputGst - totalInputGst,
+    totalTds: tdsRows.reduce((s, r) => s + r.amount, 0),
+  };
+}
+
 module.exports = {
   fetchSalesRecords,
   fetchLiveSalesData,
@@ -758,4 +844,5 @@ module.exports = {
   fetchEwayBills,
   fetchHsnSummary,
   fetchCreditTermsCompliance,
+  fetchGstTdsSummary,
 };
