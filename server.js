@@ -25,6 +25,7 @@ const cors    = require('cors');
 const config      = require('./config');
 const logger      = require('./utils/logger');
 const tallyRoutes = require('./routes/tally');
+const callsRoutes = require('./routes/calls');
 const dbPool      = require('./db/pool');
 
 const app = express();
@@ -105,6 +106,9 @@ function requireApiKey(req, res, next) {
 
 // Tally API routes
 app.use('/api/tally', requireApiKey, tallyRoutes);
+
+// Daily Sales Calls & Visits tracking API (Google Sheet Replacement)
+app.use('/api/calls', requireApiKey, callsRoutes);
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────────
 app.use((req, res) => {
