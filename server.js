@@ -32,12 +32,17 @@ const app = express();
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
-// CORS — allow configured origins (React dev server, etc.)
+// CORS — allow configured origins (React dev server, local network mobile, Vercel, etc.)
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (curl, Postman) in development
-    if (!origin || config.env === 'development') return callback(null, true);
+    // Allow requests with no origin (curl, Postman, mobile webviews)
+    if (!origin) return callback(null, true);
+    if (config.env === 'development') return callback(null, true);
     if (config.allowedOrigins.includes(origin)) return callback(null, true);
+    // Allow local LAN IPs (192.168.x.x, 10.x.x.x, etc.), localhost, and Vercel
+    if (/^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|.*\.vercel\.app)(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
     callback(new Error(`CORS: origin ${origin} not allowed`));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
