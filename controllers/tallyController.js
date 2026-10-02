@@ -87,7 +87,7 @@ async function fetchDashboardData({ bypassCache = false } = {}) {
       const result = await dbDataService.fetchLiveSalesData({ bypassCache });
       if (result.salesData.length > 0) {
         logger.success(`fetchDashboardData: ${result.salesData.length} records from Postgres.`);
-        return { source: 'db', lastSync: new Date().toISOString(), salesData: result.salesData };
+        return { source: 'db', lastSync: new Date().toISOString(), salesData: result.salesData, collections: result.collections || [] };
       }
       logger.warn('fetchDashboardData: Postgres returned 0 records — returning empty data (no demo fallback).');
     } catch (err) {
@@ -120,6 +120,7 @@ function buildDashboardResponse(liveData) {
     lastSync: liveData.lastSync,
     data: {
       salesData:        liveData.salesData,
+      collections:      liveData.collections      || [],
       allDealers:       liveData.allDealers       || allDealers,
       allSalesOfficers: liveData.allSalesOfficers || allSalesOfficers,
       inventorySummary: liveData.inventorySummary || inventorySummary,

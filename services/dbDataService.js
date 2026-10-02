@@ -99,13 +99,47 @@ async function fetchSalesRecords({ from, to, companyId, includeNonSales = false 
  * Postgres. Pass bypassCache when the user explicitly hits "Sync".
  */
 async function fetchLiveSalesData({ companyId, bypassCache = false } = {}) {
-  const key = `live-sales:${companyId || 'default'}`;
+  const key = `live-dashboard:${companyId || 'default'}`;
   // includeNonSales: the dashboard feed keeps Branch Transfer / Sample rows
   // (tagged "invoiceCategory") so the frontend can show them in their own
   // section — the frontend itself keeps them out of every sales total.
-  const load = () => fetchSalesRecords({ companyId, includeNonSales: true });
-  const salesData = bypassCache ? await load() : await cache.wrap(key, config.cacheTtlMs, load);
-  return { salesData, source: 'db' };
+  const load = async () => ({
+    salesData:   await fetchSalesRecords({ companyId, includeNonSales: true }),
+    collections: await fetchCollections({ companyId }),
+  });
+  const { salesData, collections } = bypassCache ? await load() : await cache.wrap(key, config.cacheTtlMs, load);
+  return { salesData, collections, source: 'db' };
+}
+
+/**
+ * Monthly Collection — Tally mobile's "Collection": the total of the month's
+ * Receipt vouchers. Verified against the mobile app (company …-2025-26): Apr-26
+ * 70,81,477 exactly; May-Aug 2026 within ₹5,000 of its figures. A voucher's
+ * total_amount is its party line, so summing it counts each receipt once
+ * (summing both sides of the entry would double it). Cancelled vouchers and
+ * "Receipt Note" (a goods-receipt document, not money) are excluded.
+ * Returns [{ month: 'YYYY-MM', receipts, amount }] across every synced company
+ * (or one, when companyId is passed) — voucher numbers restart every Financial
+ * Year but the vouchers table keys on the FY too, so none are lost or merged.
+ */
+async function fetchCollections({ companyId } = {}) {
+  const params = [];
+  let companyFilter = '';
+  if (companyId) {
+    const cid = await resolveCompanyId(companyId);
+    params.push(cid);
+    companyFilter = ` AND v.company_id = $${params.length}`;
+  }
+  const { rows } = await query(`
+    SELECT to_char(v.date, 'YYYY-MM')              AS "month",
+           COUNT(*)::int                           AS "receipts",
+           COALESCE(SUM(v.total_amount), 0)::float8 AS "amount"
+    FROM vouchers v
+    WHERE v.is_cancelled = false AND LOWER(v.vch_type) = 'receipt'
+      ${companyFilter}
+    GROUP BY 1 ORDER BY 1
+  `, params);
+  return rows;
 }
 
 async function fetchSales({ from, to, companyId } = {}) {
@@ -794,6 +828,7 @@ async function fetchGstTdsSummary({ companyId, from, to } = {}) {
 module.exports = {
   fetchSalesRecords,
   fetchLiveSalesData,
+  fetchCollections,
   fetchSales,
   fetchDealers,
   fetchOutstanding,
