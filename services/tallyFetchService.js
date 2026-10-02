@@ -20,7 +20,10 @@ const xml2js = require('xml2js');
 
 const config                   = require('../config');
 const logger                   = require('../utils/logger');
-const { salesData, allDealers, inventorySummary } = require('../data');
+// Demo dataset (backend/data.js) is no longer served — local fallbacks are empty.
+const salesData        = [];
+const allDealers       = [];
+const inventorySummary = [];
 const {
   buildSalesRegisterRequest,
   buildOutstandingRequest,

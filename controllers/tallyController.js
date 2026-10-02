@@ -5,11 +5,11 @@
  *
  * Data-source dispatch (config.dataSource, i.e. DATA_SOURCE env var):
  *   'db'    — read from PostgreSQL on the Antraweb VM (production). Falls
- *             back to local demo data if Postgres is unreachable.
+ *             to empty data if Postgres is unreachable (no demo data).
  *   'tally' — hit TallyPrime's XML API directly (local dev only). Falls back
- *             to local demo data on any error (tallyFetchService already
+ *             to empty data on any error (tallyFetchService already
  *             handles this).
- *   'local' — always serve the bundled demo dataset from data.js.
+ *   'local' — always serve empty data (the demo dataset is no longer served).
  *
  * Import endpoints (unrelated to dataSource — always write straight to Tally):
  *  POST /api/tally/import          — imports all vouchers from data.js
@@ -32,15 +32,22 @@ const { importAllVouchers, importSingleVoucher } = require('../services/tallyImp
 const tallyFetchService = require('../services/tallyFetchService');
 const dbDataService = require('../services/dbDataService');
 const { listCompanies } = require('../db/companies');
-const { salesData, allDealers, allSalesOfficers, inventorySummary } = require('../data');
+// The bundled demo dataset (backend/data.js) is deliberately NOT served by the
+// API any more: when Postgres/Tally is unavailable or empty the dashboard gets
+// empty arrays instead of fabricated numbers. data.js remains only as seed data
+// for the scripts/ that push test vouchers into Tally.
+const salesData        = [];
+const allDealers       = [];
+const allSalesOfficers = [];
+const inventorySummary = [];
 const { summarizeSales, summarizeDealers, summarizeOutstanding, summarizeInventory } = require('../utils/salesAggregations');
 const logger = require('../utils/logger');
 
 // ─── Data-source dispatch ─────────────────────────────────────────────────────
 
 /**
- * Runs the fetcher for config.dataSource, always falling back to local demo
- * data so the dashboard never renders empty.
+ * Runs the fetcher for config.dataSource, falling back to empty
+ * data (never demo data) when the source is unavailable.
  *   dbFn    — called when DATA_SOURCE=db
  *   tallyFn — called when DATA_SOURCE=tally (already falls back to local internally)
  *   localFn — called when DATA_SOURCE=local, and as the final fallback for 'db'
@@ -50,7 +57,7 @@ async function withDataSource(label, { dbFn, tallyFn, localFn }) {
     try {
       return await dbFn();
     } catch (err) {
-      logger.warn(`${label}: Postgres unavailable — using local demo data.`, { reason: err.message });
+      logger.warn(`${label}: Postgres unavailable — returning empty data (no demo fallback).`, { reason: err.message });
       return localFn();
     }
   }
@@ -82,9 +89,9 @@ async function fetchDashboardData({ bypassCache = false } = {}) {
         logger.success(`fetchDashboardData: ${result.salesData.length} records from Postgres.`);
         return { source: 'db', lastSync: new Date().toISOString(), salesData: result.salesData };
       }
-      logger.warn('fetchDashboardData: Postgres returned 0 records — using local demo data.');
+      logger.warn('fetchDashboardData: Postgres returned 0 records — returning empty data (no demo fallback).');
     } catch (err) {
-      logger.warn('fetchDashboardData: Postgres unavailable — using local demo data.', { reason: err.message });
+      logger.warn('fetchDashboardData: Postgres unavailable — returning empty data (no demo fallback).', { reason: err.message });
     }
     return localFallback();
   }
@@ -96,9 +103,9 @@ async function fetchDashboardData({ bypassCache = false } = {}) {
         logger.success(`fetchDashboardData: ${result.salesData.length} live records fetched from Tally.`);
         return { ...result, source: 'tally', lastSync: new Date().toISOString() };
       }
-      logger.warn('fetchDashboardData: Tally returned 0 records — using local demo data.');
+      logger.warn('fetchDashboardData: Tally returned 0 records — returning empty data (no demo fallback).');
     } catch (err) {
-      logger.warn('fetchDashboardData: Tally unreachable — using local demo data.', { reason: err.message });
+      logger.warn('fetchDashboardData: Tally unreachable — returning empty data (no demo fallback).', { reason: err.message });
     }
     return localFallback();
   }
