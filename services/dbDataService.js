@@ -143,6 +143,11 @@ async function fetchSalesRecords({ from, to, companyId, includeNonSales = false 
       v.date                                           AS "date",
       v.vch_type                                       AS "vchType",
       vc.category                                      AS "invoiceCategory",
+      -- "24-25" / "25-26": the Financial Year is the Tally COMPANY, not the
+      -- calendar date — the 25-26 company holds Apr-Sep 2026 vouchers too
+      -- (verified in Tally's own mobile dashboard), so slicing by date alone
+      -- would file them under the wrong year. Taken from the company's name.
+      COALESCE(substring(co.name from '(\\d{2}-\\d{2})'), '')  AS "fiscalYear",
       v.party_name                                     AS "partyName",
       -- tallybackend used to fabricate an item name from free-text narration
       -- when a voucher had no real inventory line (fixed there in commit
@@ -174,6 +179,7 @@ async function fetchSalesRecords({ from, to, companyId, includeNonSales = false 
            THEN COALESCE(br.amount, 0) ELSE 0 END        AS "finalOutstanding"
     FROM vouchers v
     JOIN voucher_category vc ON vc.id = v.id
+    LEFT JOIN companies co ON co.id = v.company_id
     LEFT JOIN voucher_inventory_entries vie ON vie.voucher_id = v.id
     LEFT JOIN stock_items si
       ON si.company_id = v.company_id AND si.name = vie.item_name
