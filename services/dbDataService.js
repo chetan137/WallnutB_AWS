@@ -17,6 +17,7 @@ const { query } = require('../db/pool');
 const { resolveCompanyId } = require('../db/companies');
 const config = require('../config');
 const { createTtlCache } = require('../utils/cache');
+const { buildSalesRecordsSql } = require('./salesRecordsSql');
 const {
   summarizeSales,
   summarizeDealers,
@@ -63,47 +64,6 @@ const cache = createTtlCache();
  *    views will stay empty for real data until that's addressed upstream.
  */
 /**
- * Invoice category — Branch Transfer and Sample invoices are Sales-type
- * vouchers in Tally but are not real customer sales, so every revenue/KPI
- * number must leave them out while the dashboard still lists them in their
- * own section. Rules come from real Tally XML (debug_find_branch_sample.js):
- *  • Branch Transfer — there is no separate voucher type for it; it is a
- *    normal Sales voucher whose sales ledger sits in the "Branch Trf-Sales"
- *    ledger group (e.g. "Oms Sales Gst 18%-Br", "Sales Branch Transfer
- *    Kolhapur"), or whose ledger name says "Branch Transfer" (e.g.
- *    "Branch Transfer Sales 0212" — in the 25-26 company that one sits under
- *    the normal "Sales Accounts" group, so the group alone is not enough), or
- *    whose party is one of the company's own branch ledgers ("Debtors Branch
- *    Trf" / "Creditors Branch Trf" / "Branch / Divisions" groups).
- *  • Sample — voucher type "Promotional Invoice" (parent type Sales), or a
- *    free-goods ledger: "Free Gift", "Free Promotional Iteam", "Sample Sale",
- *    "Free Sample", "Free Samples -Customer".
- * Branch Transfer wins if both match. Anything else is 'sale'.
- * Sample stock transfers booked as Stock Journal ("Being Sample send to...")
- * are not Sales/Credit Note vouchers, so they never reach this query.
- */
-const INVOICE_CATEGORY_SQL = `
-  CASE
-    WHEN EXISTS (
-           SELECT 1 FROM voucher_ledger_entries e
-           LEFT JOIN ledgers el ON el.company_id = v.company_id AND el.name = e.ledger_name
-           WHERE e.voucher_id = v.id
-             AND (el.parent_group ILIKE 'Branch Trf%Sales%' OR e.ledger_name ILIKE '%branch transfer%')
-         )
-         OR pl.parent_group ILIKE '%Branch Trf%'
-         OR pl.parent_group ILIKE 'Branch / Divisions'
-      THEN 'branch_transfer'
-    WHEN v.vch_type ILIKE 'promotional invoice%'
-         OR EXISTS (
-           SELECT 1 FROM voucher_ledger_entries e
-           WHERE e.voucher_id = v.id
-             AND e.ledger_name ILIKE ANY (ARRAY['free gift%', 'free promotional%', 'free sample%', 'sample sale%'])
-         )
-      THEN 'sample'
-    ELSE 'sale'
-  END`;
-
-/**
  * @param {object}  [opts]
  * @param {boolean} [opts.includeNonSales=false]  Keep Branch Transfer / Sample
  *   rows (tagged via "invoiceCategory"). Off by default so every KPI, dealer,
@@ -128,61 +88,7 @@ async function fetchSalesRecords({ from, to, companyId, includeNonSales = false 
   if (from) { params.push(from); dateFilter += ` AND v.date >= $${params.length}`; }
   if (to)   { params.push(to);   dateFilter += ` AND v.date <= $${params.length}`; }
 
-  const { rows } = await query(`
-    WITH voucher_category AS (
-      SELECT v.id, ${INVOICE_CATEGORY_SQL} AS category
-      FROM vouchers v
-      LEFT JOIN ledgers pl ON pl.company_id = v.company_id AND pl.name = v.party_name
-      WHERE v.is_cancelled = false
-        AND (LOWER(v.vch_type) LIKE 'sales%' OR LOWER(v.vch_type) LIKE 'credit note%')
-        ${companyFilter}
-        ${dateFilter}
-    )
-    SELECT
-      v.vch_no                                        AS "vchNo",
-      v.date                                           AS "date",
-      v.vch_type                                       AS "vchType",
-      vc.category                                      AS "invoiceCategory",
-      v.party_name                                     AS "partyName",
-      -- tallybackend used to fabricate an item name from free-text narration
-      -- when a voucher had no real inventory line (fixed there in commit
-      -- cd73651, but rows synced before that fix still carry the garbage —
-      -- e.g. "Being Credit note raised for Exhibition done at..."). Blank
-      -- it out here rather than dropping the row, so the real amount still
-      -- counts toward revenue — only the (never-valid) item label is lost.
-      CASE WHEN vie.item_name ILIKE 'Being %' OR vie.item_name ILIKE '(Being%' OR vie.item_name ILIKE 'Being'
-           THEN NULL ELSE vie.item_name END              AS "itemName",
-      COALESCE(vie.quantity, 0)                        AS "quantity",
-      vie.unit                                         AS "units",
-      COALESCE(vie.rate, 0)                            AS "rate",
-      COALESCE(vie.amount, v.total_amount)             AS "amount",
-      COALESCE(vie.sales_officer, '')                  AS "salesMan",
-      COALESCE(vie.area_city, '')                      AS "areaCity",
-      COALESCE(NULLIF(vie.state, ''), l.state, '')     AS "state",
-      COALESCE(si.parent_group, '')                    AS "stockGroup",
-      COALESCE(si.parent_group, '')                    AS "stockCategory",
-      -- BUG FIX: bills_receivable is bill-level (one row per bill), but this
-      -- query is at (voucher x inventory-line) grain — a voucher with N
-      -- line items joined the SAME br.amount onto all N rows, so summing
-      -- finalOutstanding over any scope multiplied every bill's amount by
-      -- however many line items its voucher had (avg ~2.8x for this data,
-      -- verified against a direct bills_receivable total: the old query
-      -- summed to 5x the real figure for company 1). Attribute the full
-      -- amount to only the first line of each voucher (by vie.id) so a SUM
-      -- across rows counts each bill exactly once, matching bills_receivable.
-      CASE WHEN ROW_NUMBER() OVER (PARTITION BY v.id ORDER BY vie.id) = 1
-           THEN COALESCE(br.amount, 0) ELSE 0 END        AS "finalOutstanding"
-    FROM vouchers v
-    JOIN voucher_category vc ON vc.id = v.id
-    LEFT JOIN voucher_inventory_entries vie ON vie.voucher_id = v.id
-    LEFT JOIN stock_items si
-      ON si.company_id = v.company_id AND si.name = vie.item_name
-    LEFT JOIN bills_receivable br
-      ON br.company_id = v.company_id AND br.party_name = v.party_name AND br.bill_ref = v.vch_no
-    LEFT JOIN ledgers l
-      ON l.company_id = v.company_id AND l.name = v.party_name
-    ORDER BY v.date DESC
-  `, params);
+  const { rows } = await query(buildSalesRecordsSql({ companyFilter, dateFilter }), params);
 
   return includeNonSales ? rows : rows.filter((r) => r.invoiceCategory === 'sale');
 }
