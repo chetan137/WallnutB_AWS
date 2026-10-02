@@ -26,6 +26,8 @@ const config      = require('./config');
 const logger      = require('./utils/logger');
 const tallyRoutes = require('./routes/tally');
 const callsRoutes = require('./routes/calls');
+const usersRoutes = require('./routes/users');
+const usersDb     = require('./db/users');
 const dbPool      = require('./db/pool');
 
 const app = express();
@@ -115,6 +117,9 @@ app.use('/api/tally', requireApiKey, tallyRoutes);
 // Daily Sales Calls & Visits tracking API (Google Sheet Replacement)
 app.use('/api/calls', requireApiKey, callsRoutes);
 
+// Dashboard login + user management (CEO-only CRUD). Not connected to Tally.
+app.use('/api/users', requireApiKey, usersRoutes);
+
 // ─── 404 Handler ──────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({
@@ -141,6 +146,9 @@ app.listen(config.port, () => {
   logger.info(`   Data source : ${config.dataSource}`);
   logger.info(`   Tally target: ${config.tally.baseUrl} (company: "${config.tally.companyName}")`);
   logger.info(`   Environment : ${config.env}`);
+  usersDb.ensureSchema().catch((err) =>
+    logger.error('Could not prepare app_users table — login will fail until the DB is reachable.', { message: err.message })
+  );
   logger.info(`   Endpoints   :`);
   logger.info(`     GET  http://localhost:${config.port}/api/health`);
   logger.info(`     GET  http://localhost:${config.port}/api/tally/health`);

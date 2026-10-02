@@ -43,5 +43,11 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             npm ci --omit=dev
+            # AUTH_SECRET signs login tokens. Create it once on the server if
+            # it's missing, so a deploy never starts with a per-boot random one.
+            if ! grep -q '^AUTH_SECRET=.\+' .env; then
+              printf '\nAUTH_SECRET=%s\n' "$(openssl rand -hex 48)" >> .env
+              echo "Generated AUTH_SECRET in .env"
+            fi
             pm2 startOrReload pm2.config.js --update-env
             pm2 save

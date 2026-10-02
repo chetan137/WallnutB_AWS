@@ -25,7 +25,9 @@ module.exports = {
       restart_delay:       5000,
       max_restarts:         20,
 
-      // Secrets stay in .env (loaded by dotenv inside config/index.js).
+      // Secrets (PG_PASSWORD, API_KEY, AUTH_SECRET, ...) stay in .env on the
+      // server (loaded by dotenv inside config/index.js). The deploy workflow
+      // makes sure AUTH_SECRET exists there before reloading.
       env: {
         NODE_ENV: 'production',
       },

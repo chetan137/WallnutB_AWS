@@ -105,6 +105,17 @@ const config = {
    * sends it via VITE_API_KEY (see frontend/src/context/RoleContext.jsx).
    */
   apiKey: process.env.API_KEY || '',
+
+  /**
+   * Secret used to sign login tokens. Set AUTH_SECRET in production so
+   * sessions survive restarts; without it a random one is generated per boot
+   * (everyone is logged out whenever the server restarts).
+   */
+  authSecret: process.env.AUTH_SECRET || require('crypto').randomBytes(32).toString('hex'),
 };
+
+if (config.env === 'production' && !process.env.AUTH_SECRET) {
+  console.warn('[config] AUTH_SECRET is not set — login tokens will be invalidated on every restart.');
+}
 
 module.exports = config;
