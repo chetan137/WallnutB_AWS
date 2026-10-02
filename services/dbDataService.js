@@ -62,7 +62,55 @@ const cache = createTtlCache();
  *    schema, only state (via the ledger). District/officer-scoped dashboard
  *    views will stay empty for real data until that's addressed upstream.
  */
-async function fetchSalesRecords({ from, to, companyId } = {}) {
+/**
+ * Invoice category — Branch Transfer and Sample invoices are Sales-type
+ * vouchers in Tally but are not real customer sales, so every revenue/KPI
+ * number must leave them out while the dashboard still lists them in their
+ * own section. Rules come from real Tally XML (debug_find_branch_sample.js):
+ *  • Branch Transfer — there is no separate voucher type for it; it is a
+ *    normal Sales voucher whose sales ledger sits in the "Branch Trf-Sales"
+ *    ledger group (e.g. "Oms Sales Gst 18%-Br", "Sales Branch Transfer
+ *    Kolhapur"), or whose ledger name says "Branch Transfer" (e.g.
+ *    "Branch Transfer Sales 0212" — in the 25-26 company that one sits under
+ *    the normal "Sales Accounts" group, so the group alone is not enough), or
+ *    whose party is one of the company's own branch ledgers ("Debtors Branch
+ *    Trf" / "Creditors Branch Trf" / "Branch / Divisions" groups).
+ *  • Sample — voucher type "Promotional Invoice" (parent type Sales), or a
+ *    free-goods ledger: "Free Gift", "Free Promotional Iteam", "Sample Sale",
+ *    "Free Sample", "Free Samples -Customer".
+ * Branch Transfer wins if both match. Anything else is 'sale'.
+ * Sample stock transfers booked as Stock Journal ("Being Sample send to...")
+ * are not Sales/Credit Note vouchers, so they never reach this query.
+ */
+const INVOICE_CATEGORY_SQL = `
+  CASE
+    WHEN EXISTS (
+           SELECT 1 FROM voucher_ledger_entries e
+           LEFT JOIN ledgers el ON el.company_id = v.company_id AND el.name = e.ledger_name
+           WHERE e.voucher_id = v.id
+             AND (el.parent_group ILIKE 'Branch Trf%Sales%' OR e.ledger_name ILIKE '%branch transfer%')
+         )
+         OR pl.parent_group ILIKE '%Branch Trf%'
+         OR pl.parent_group ILIKE 'Branch / Divisions'
+      THEN 'branch_transfer'
+    WHEN v.vch_type ILIKE 'promotional invoice%'
+         OR EXISTS (
+           SELECT 1 FROM voucher_ledger_entries e
+           WHERE e.voucher_id = v.id
+             AND e.ledger_name ILIKE ANY (ARRAY['free gift%', 'free promotional%', 'free sample%', 'sample sale%'])
+         )
+      THEN 'sample'
+    ELSE 'sale'
+  END`;
+
+/**
+ * @param {object}  [opts]
+ * @param {boolean} [opts.includeNonSales=false]  Keep Branch Transfer / Sample
+ *   rows (tagged via "invoiceCategory"). Off by default so every KPI, dealer,
+ *   Pareto/ABC and summary endpoint excludes them; only the dashboard feed
+ *   (fetchLiveSalesData) turns it on, to show them in their own section.
+ */
+async function fetchSalesRecords({ from, to, companyId, includeNonSales = false } = {}) {
   // No company_id filter unless the caller passes one explicitly (see the
   // doc comment above) — the frontend's Select Year control depends on this
   // endpoint returning every synced company's real vouchers so it can slice
@@ -81,10 +129,20 @@ async function fetchSalesRecords({ from, to, companyId } = {}) {
   if (to)   { params.push(to);   dateFilter += ` AND v.date <= $${params.length}`; }
 
   const { rows } = await query(`
+    WITH voucher_category AS (
+      SELECT v.id, ${INVOICE_CATEGORY_SQL} AS category
+      FROM vouchers v
+      LEFT JOIN ledgers pl ON pl.company_id = v.company_id AND pl.name = v.party_name
+      WHERE v.is_cancelled = false
+        AND (LOWER(v.vch_type) LIKE 'sales%' OR LOWER(v.vch_type) LIKE 'credit note%')
+        ${companyFilter}
+        ${dateFilter}
+    )
     SELECT
       v.vch_no                                        AS "vchNo",
       v.date                                           AS "date",
       v.vch_type                                       AS "vchType",
+      vc.category                                      AS "invoiceCategory",
       v.party_name                                     AS "partyName",
       -- tallybackend used to fabricate an item name from free-text narration
       -- when a voucher had no real inventory line (fixed there in commit
@@ -115,6 +173,7 @@ async function fetchSalesRecords({ from, to, companyId } = {}) {
       CASE WHEN ROW_NUMBER() OVER (PARTITION BY v.id ORDER BY vie.id) = 1
            THEN COALESCE(br.amount, 0) ELSE 0 END        AS "finalOutstanding"
     FROM vouchers v
+    JOIN voucher_category vc ON vc.id = v.id
     LEFT JOIN voucher_inventory_entries vie ON vie.voucher_id = v.id
     LEFT JOIN stock_items si
       ON si.company_id = v.company_id AND si.name = vie.item_name
@@ -122,14 +181,10 @@ async function fetchSalesRecords({ from, to, companyId } = {}) {
       ON br.company_id = v.company_id AND br.party_name = v.party_name AND br.bill_ref = v.vch_no
     LEFT JOIN ledgers l
       ON l.company_id = v.company_id AND l.name = v.party_name
-    WHERE v.is_cancelled = false
-      AND (LOWER(v.vch_type) LIKE 'sales%' OR LOWER(v.vch_type) LIKE 'credit note%')
-      ${companyFilter}
-      ${dateFilter}
     ORDER BY v.date DESC
   `, params);
 
-  return rows;
+  return includeNonSales ? rows : rows.filter((r) => r.invoiceCategory === 'sale');
 }
 
 /**
@@ -139,7 +194,10 @@ async function fetchSalesRecords({ from, to, companyId } = {}) {
  */
 async function fetchLiveSalesData({ companyId, bypassCache = false } = {}) {
   const key = `live-sales:${companyId || 'default'}`;
-  const load = () => fetchSalesRecords({ companyId });
+  // includeNonSales: the dashboard feed keeps Branch Transfer / Sample rows
+  // (tagged "invoiceCategory") so the frontend can show them in their own
+  // section — the frontend itself keeps them out of every sales total.
+  const load = () => fetchSalesRecords({ companyId, includeNonSales: true });
   const salesData = bypassCache ? await load() : await cache.wrap(key, config.cacheTtlMs, load);
   return { salesData, source: 'db' };
 }
