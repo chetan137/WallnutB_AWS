@@ -71,6 +71,7 @@ const cache = createTtlCache();
  *   (fetchLiveSalesData) turns it on, to show them in their own section.
  */
 async function fetchSalesRecords({ from, to, companyId, includeNonSales = false } = {}) {
+  await ensureLocationSchema();
   // No company_id filter unless the caller passes one explicitly (see the
   // doc comment above) — the frontend's Select Year control depends on this
   // endpoint returning every synced company's real vouchers so it can slice
@@ -93,6 +94,21 @@ async function fetchSalesRecords({ from, to, companyId, includeNonSales = false 
   // 'other' = posts to neither Sales Accounts nor Branch Trf-Sales: not sales in Tally, never shown.
   const relevant = rows.filter((r) => r.invoiceCategory !== 'other');
   return includeNonSales ? relevant : relevant.filter((r) => r.invoiceCategory === 'sale');
+}
+
+// The sales query joins pincode_locations / ledgers.pincode. tallybackend creates and fills them,
+// but if this API is deployed first the query must not fail — create them (empty) once.
+let locationSchemaReady = null;
+function ensureLocationSchema() {
+  if (!locationSchemaReady) {
+    locationSchemaReady = (async () => {
+      await query(`CREATE TABLE IF NOT EXISTS pincode_locations (
+        pincode TEXT PRIMARY KEY, state TEXT, district TEXT, city TEXT,
+        fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+      await query('ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS pincode TEXT');
+    })().catch((err) => { locationSchemaReady = null; throw err; });
+  }
+  return locationSchemaReady;
 }
 
 /**
