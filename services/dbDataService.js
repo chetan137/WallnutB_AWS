@@ -90,7 +90,9 @@ async function fetchSalesRecords({ from, to, companyId, includeNonSales = false 
 
   const { rows } = await query(buildSalesRecordsSql({ companyFilter, dateFilter }), params);
 
-  return includeNonSales ? rows : rows.filter((r) => r.invoiceCategory === 'sale');
+  // 'other' = posts to neither Sales Accounts nor Branch Trf-Sales: not sales in Tally, never shown.
+  const relevant = rows.filter((r) => r.invoiceCategory !== 'other');
+  return includeNonSales ? relevant : relevant.filter((r) => r.invoiceCategory === 'sale');
 }
 
 /**
